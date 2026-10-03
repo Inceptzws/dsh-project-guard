@@ -3,12 +3,17 @@
 [中文说明](README.zh.md) | **English**
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that
-makes permissions **project-scoped**: work inside this project runs with full
-access and no prompts, while everything outside it — and every system-level
-call — is confirmed by you, **one prompt at a time**.
+**keeps the sandbox mode you chose** and judges only the *extra permission* a call
+asks for. Work inside the workspace never involves the plugin at all — the sandbox
+already confines it. When a call wants more than that mode allows, the test is
+whether it can damage the computer or stop another program from working: reads,
+network traffic, uploads, temp files and package caches pass; system state changes
+and writes outside the project ask you once, with a consequence analysis; the
+actions that would damage the machine or cut the session are refused outright. At
+most one confirmation is outstanding at a time.
 
 It is a Host plugin: zero dependencies, no imports of any Harness package, no UI
-code, and no build step. `index.js` plus four small modules is the whole plugin.
+code, and no build step. `index.js` plus five small modules is the whole plugin.
 
 ---
 
