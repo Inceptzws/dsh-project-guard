@@ -159,6 +159,28 @@ test('destructive system commands are denied with structured detail', async () =
   assert.equal(decision.kind, 'deny');
   assert.equal(decision.info.name, 'ProjectGuardDeniedError');
   assert.equal(decision.info.code, 'NETWORK_OFF');
+  assert.match(decision.reason, /Wi-Fi/);
+});
+
+test('the confirmation prompt states what going ahead would cause', async () => {
+  const ctx = createContext();
+  apply(ctx, { projectRoots: [PROJECT] });
+  const gate = listenerFor(ctx, 'tools/pre-execute');
+
+  const sys = await gate.listener(execution('bash', { command: 'brew install jq' }), async () => ({ kind: 'allow' }));
+  assert.equal(sys.kind, 'ask');
+  assert.match(sys.displayReason.zh, /可能的不良结果（中）/);
+  assert.match(sys.displayReason.en, /Possible adverse outcome \(medium\)/);
+  assert.match(sys.reason, /\[impact: medium\]/);
+
+  const high = await gate.listener(execution('bash', { command: 'dd if=/dev/zero of=./big.img' }), async () => ({ kind: 'allow' }));
+  assert.equal(high.kind, 'ask');
+  assert.match(high.displayReason.zh, /可能的不良结果（高）/);
+  assert.match(high.reason, /\[impact: high\]/);
+
+  const undecidable = await gate.listener(execution('bash', { command: 'node -e "doSomething()"' }), async () => ({ kind: 'allow' }));
+  assert.equal(undecidable.kind, 'ask');
+  assert.match(undecidable.displayReason.zh, /可能的不良结果（未知）/);
 });
 
 test('only one confirmation is outstanding at a time', async () => {

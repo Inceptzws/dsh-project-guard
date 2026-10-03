@@ -24,6 +24,7 @@
  */
 import { createApprovalQueue } from './lib/approval-queue.js';
 import { createPolicy } from './lib/classify.js';
+import { impactLine } from './lib/impact.js';
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'project-guard';
@@ -37,9 +38,15 @@ const ESCALATION_REASON = /^escalate sandbox to (?:read-only|workspace-write|dan
 /** Structured error name for a guard refusal. */
 const GUARD_DENIED_ERROR_NAME = 'ProjectGuardDeniedError';
 
-/** Build a short, user-facing pair of sentences from an audited reason. */
-function displayOf(reason, zh) {
-  return { en: reason.replace(/^project guard:\s*/, ''), zh };
+/**
+ * Build the text the confirmation prompt shows: what the call does, and what
+ * goes wrong if the user allows it.
+ */
+function displayOf(reason, zh, impact) {
+  const en = reason.replace(/^project guard:\s*/, '');
+  const warning = impactLine(impact);
+  if (warning === undefined) return { en, zh };
+  return { en: `${en}\n\n${warning.en}`, zh: `${zh}\n\n${warning.zh}` };
 }
 
 /**
@@ -141,7 +148,7 @@ export function apply(ctx, config) {
     if (decision.kind === 'deny') {
       return {
         kind: 'deny',
-        reason: decision.reason,
+        reason: decision.impact === undefined ? decision.reason : `${decision.reason} — ${decision.impact.en}`,
         info: {
           name: GUARD_DENIED_ERROR_NAME,
           code: decision.code ?? 'PROJECT_GUARD_DENIED',
@@ -149,10 +156,12 @@ export function apply(ctx, config) {
         }
       };
     }
+    const level = decision.impact?.level;
     return {
       kind: 'ask',
-      reason: decision.reason,
-      displayReason: displayOf(decision.reason, decision.zh)
+      // The audited reason carries the impact level; the prompt carries the text.
+      reason: level === undefined ? decision.reason : `${decision.reason} [impact: ${level}]`,
+      displayReason: displayOf(decision.reason, decision.zh, decision.impact)
     };
   };
 

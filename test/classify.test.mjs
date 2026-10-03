@@ -236,3 +236,58 @@ test('every verdict carries a bilingual display reason', () => {
   assert.ok(decision.displayReason.zh.length > 0);
   assert.equal(decision.system, true);
 });
+
+test('every confirmation carries an adverse-outcome analysis', () => {
+  const decision = decide('bash', { command: 'curl https://example.com' });
+  assert.equal(decision.impact.level, 'medium');
+  assert.ok(decision.impact.zh.length > 0);
+  assert.ok(decision.impact.en.length > 0);
+});
+
+test('the analysis rates the consequences a user must weigh', () => {
+  const levels = {
+    'network interface down': ['bash', { command: 'ifconfig en0 down' }, 'high'],
+    'power off': ['bash', { command: 'reboot' }, 'high'],
+    'unbounded write': ['bash', { command: 'dd if=/dev/zero of=./big.img' }, 'high'],
+    'disk allocation': ['bash', { command: 'fallocate -l 10g ./big.img' }, 'high'],
+    'privileged command': ['bash', { command: 'sudo true' }, 'high'],
+    'network egress': ['bash', { command: 'ssh host uptime' }, 'medium'],
+    'global install': ['bash', { command: 'npm install -g typescript' }, 'medium'],
+    'path outside project': ['write', { file_path: '/etc/hosts', content: 'x' }, 'medium'],
+    'remote git': ['bash', { command: 'git push origin main' }, 'medium'],
+    'port binding': ['bash', { command: 'python3 -m http.server 8080' }, 'medium'],
+    'read-only system probe': ['bash', { command: 'sw_vers' }, 'low'],
+    'uninspectable code': ['bash', { command: 'node -e "x"' }, 'unknown'],
+    'unknown tool': ['mystery_tool', {}, 'unknown']
+  };
+  for (const [label, [tool, args, expected]] of Object.entries(levels)) {
+    const decision = decide(tool, args);
+    assert.equal(decision.kind === 'allow' ? 'allow' : decision.kind, decision.kind);
+    assert.equal(decision.impact?.level, expected, `${label}: expected ${expected}, got ${decision.impact?.level}`);
+  }
+});
+
+test('the analysis names the specific risk of the program being run', () => {
+  const network = decide('bash', { command: 'defaults write com.apple.dock tilesize -int 1' });
+  assert.match(network.impact.zh, /偏好设置/);
+  const kill = decide('bash', { command: 'pkill -f helper' });
+  assert.match(kill.impact.zh, /终止进程/);
+  const registry = decide('bash', { command: 'brew install jq' });
+  assert.match(registry.impact.zh, /全局/);
+});
+
+test('heredoc content is data, not a command to refuse', () => {
+  const documented = [
+    'cat > notes.md <<\'EOF\'',
+    'rm -rf /',
+    'networksetup -setairportpower en0 off',
+    'EOF',
+    ''
+  ].join('\n');
+  const decision = decide('bash', { command: documented });
+  assert.equal(decision.kind, 'allow', `heredoc body must not deny the call (got ${decision.code})`);
+
+  // The same text as an actual command is still refused.
+  assert.equal(decide('bash', { command: 'rm -rf /' }).kind, 'deny');
+  assert.equal(decide('bash', { command: "bash -c 'rm -rf /'" }).kind, 'deny');
+});

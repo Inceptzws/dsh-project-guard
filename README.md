@@ -21,6 +21,7 @@ code, and no build step. `index.js` plus four small modules is the whole plugin.
 | Every system-related call or change needs your confirmation | `sudo`, `launchctl`, `defaults`, `networksetup`, `ifconfig`, `pmset`, `diskutil`, `softwareupdate`, `spctl`, `sysctl`, `ps`, `lsof`, `kill`/`killall`/`pkill`, `brew`, `pip`, `osascript`, `open`, `curl`/`ssh`/`gh`/`docker`, and more |
 | Other programs must keep working | Commands that can starve the machine or occupy a shared resource ask first: `dd if=/dev/zero`, `yes >`, unbounded loops, `stress`, `python -m http.server` |
 | Only one confirmation may be outstanding | A single-slot queue in front of the approval seam; system-related requests take the slot before ordinary ones |
+| Every confirmation explains the downside | Each prompt carries a deterministic impact analysis: a level plus the concrete adverse outcome of saying yes |
 
 ## Why "one at a time" is not cosmetic
 
@@ -31,6 +32,25 @@ visible slot per session, and `dsh-client-ui-approval` registers the approval
 precedence). Two concurrent approvals therefore make the first one impossible to
 answer. This plugin queues `approval/request` in front of the interactive
 answerer, so at most one prompt is ever live.
+
+### Every prompt states what going ahead would cause
+
+A prompt that only asks "allow?" makes you guess. Each confirmation carries a
+deterministic, table-driven assessment — never model-generated — with an impact
+level and the concrete consequence:
+
+- **high** — `ifconfig en0 down`: the machine loses its network, including the
+  model service carrying this conversation; the session is cut off and only you
+  can bring it back.
+- **medium** — `brew install jq`: installs packages globally, may upgrade shared
+  dependencies and break other projects or command-line tools.
+- **low** — `sw_vers`: only reads the system version; nothing is changed.
+- **unknown** — `node -e "…"`: inline code the plugin cannot read, so the real
+  effects are unknown and may reach beyond what the command appears to do.
+
+The level comes from the verdict category and, for system commands, is refined
+per program (`sudo`, `launchctl`, `defaults`, `kill`, `diskutil`, `pip`,
+`osascript`, …). Refusals state the consequence too, so the model learns why.
 
 ## How a call is decided
 
@@ -184,22 +204,26 @@ replaces the complete config):
 ## Verify
 
 ```sh
-node --test test/*.test.mjs      # 38 unit and integration tests
+node --test test/*.test.mjs      # 44 unit and integration tests
 node test/cordis-mount.mjs       # mounts the plugin on the real cordis runtime
 ```
 
 The unit suite pins the three promises (allow / ask / deny), symlink and `..`
 escapes, heredoc and redirection parsing, inline code and `eval`, resource
-exhaustion, escalation reuse, and the single-slot queue (no overlap, system
-priority, abort, unload). The mount script proves `ctx.effect(function* …)`
-teardown, `{ prepend: true }` ordering and the `ctx.waterfall` contract against
-the installed runtime.
+exhaustion, escalation reuse, the impact levels and texts, and the single-slot
+queue (no overlap, system priority, abort, unload). The mount script proves
+`ctx.effect(function* …)` teardown, `{ prepend: true }` ordering and the
+`ctx.waterfall` contract against the installed runtime.
 
 ## Limitations
 
 - Containment is judged from the tool name, its arguments and the command text.
   `allowInlineCode: true` and variables used as paths weaken that guarantee by
   design.
+- The impact analysis is a rule table, not a simulation: it names the
+  consequences the plugin has a rule for, and a consequence with no rule stays
+  unmentioned even though it may still happen. The level is a hint for ranking
+  your attention, not a guarantee of severity.
 - It governs the Host tool calls it can see. Subagents run their own sessions;
   their approvals still pass through the same queue, so "one at a time" holds
   across them.
