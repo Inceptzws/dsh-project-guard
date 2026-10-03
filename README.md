@@ -144,12 +144,20 @@ per program (`sudo`, `launchctl`, `defaults`, `kill`, `diskutil`, `pip`,
 The package is a standard Harness bundle: its `package.json` declares
 `dsh.bundle.patch`, it has no dependencies and it needs no build step.
 
-### From GitHub (anyone)
+### From npm (anyone)
+
+Published as [`dsh-project-guard`](https://www.npmjs.com/package/dsh-project-guard):
+
+```sh
+dsh plugin --profile <profile> add dsh-project-guard
+# remove again:
+dsh plugin --profile <profile> remove dsh-project-guard
+```
+
+### From GitHub
 
 ```sh
 dsh plugin --profile <profile> add github:Inceptzws/dsh-project-guard
-# remove again:
-dsh plugin --profile <profile> remove dsh-project-guard
 ```
 
 The command installs the package and selects its bundle. Confirm the result:
@@ -163,7 +171,7 @@ Desktop app works:
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node" \
-  /opt/homebrew/bin/dsh plugin --profile web add github:Inceptzws/dsh-project-guard
+  /opt/homebrew/bin/dsh plugin --profile web add dsh-project-guard
 ```
 
 ### Desktop app (recommended there)
@@ -172,8 +180,8 @@ The `desktop` profile is owned exclusively by the Electron app, so its plugins
 are installed from the app itself:
 
 1. Open **Settings → Plugins** (设置 → 插件).
-2. Choose **Install bundle** and give either the spec
-   `github:Inceptzws/dsh-project-guard` or the absolute path of a local checkout.
+2. Choose **Install bundle** and give `dsh-project-guard`,
+   `github:Inceptzws/dsh-project-guard`, or the absolute path of a local checkout.
 3. The Plugins page reports the installation result and any warning; the new
    `project-guard` row appears there and is active immediately.
 

@@ -110,12 +110,20 @@ Harness 每个会话只展示**一个**待处理审批：新的请求会在输�
 这是一个标准 Harness bundle：`package.json` 里声明了 `dsh.bundle.patch`，
 没有任何依赖，也不需要构建。
 
-### 从 GitHub 安装（任何人）
+### 从 npm 安装（任何人，推荐）
+
+已发布到 npm：[`dsh-project-guard`](https://www.npmjs.com/package/dsh-project-guard)
+
+```sh
+dsh plugin --profile <profile> add dsh-project-guard
+# 卸载：
+dsh plugin --profile <profile> remove dsh-project-guard
+```
+
+### 从 GitHub 安装
 
 ```sh
 dsh plugin --profile <profile> add github:Inceptzws/dsh-project-guard
-# 卸载：
-dsh plugin --profile <profile> remove dsh-project-guard
 ```
 
 这条命令会安装包并选中它的 bundle。确认组合结果：
@@ -128,7 +136,7 @@ dsh --profile <profile> --dump-config | grep -A14 project-guard
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node" \
-  /opt/homebrew/bin/dsh plugin --profile web add github:Inceptzws/dsh-project-guard
+  /opt/homebrew/bin/dsh plugin --profile web add dsh-project-guard
 ```
 
 ### 桌面 App（推荐）
@@ -136,8 +144,8 @@ dsh --profile <profile> --dump-config | grep -A14 project-guard
 `desktop` 配置由 Electron App 独占管理，所以它的插件要从 App 内安装：
 
 1. 打开 **设置 → 插件**（Settings → Plugins）。
-2. 选择 **安装 bundle / Install bundle**，填入 `github:Inceptzws/dsh-project-guard`，
-   或选中本地 clone 的绝对路径。
+2. 选择 **安装 bundle / Install bundle**，填入 `dsh-project-guard`
+   （或 `github:Inceptzws/dsh-project-guard`，或本地 clone 的绝对路径）。
 3. 插件页会显示安装结果和警告，出现 `project-guard` 行，并且立即生效。
 
 ### 其他 profile（web、tui、自建）
