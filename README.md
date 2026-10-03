@@ -16,39 +16,59 @@ code, and no build step. `index.js` plus four small modules is the whole plugin.
 
 | Requirement | How the plugin delivers it |
 |---|---|
-| Automatic full permissions **only inside this project** | Calls that are provably confined to the session workspace, the configured extra roots or the platform temp area pass straight through — including the sandbox escalation a tool needs to run with `danger-full-access` |
-| Anything unrelated to the project needs your confirmation | Paths outside the project, commands that reach outside it, and unknown tools become one confirmation |
-| Every system-related call or change needs your confirmation | `sudo`, `launchctl`, `defaults`, `networksetup`, `ifconfig`, `pmset`, `diskutil`, `softwareupdate`, `spctl`, `sysctl`, `ps`, `lsof`, `kill`/`killall`/`pkill`, `brew`, `pip`, `osascript`, `open`, `curl`/`ssh`/`gh`/`docker`, and more |
-| Other programs must keep working | Commands that can starve the machine or occupy a shared resource ask first: `dd if=/dev/zero`, `yes >`, unbounded loops, `stress`, `python -m http.server` |
+| Work inside the workspace is never interrupted | The sandbox already confines it, so the guard takes no part: no classification, no record, no prompt |
+| The guard only speaks about *extra* permission | It engages when a call asks to escalate past the session's sandbox mode, or while the session runs at full permission |
+| What cannot disturb the machine is granted silently | Reads anywhere, network and uploads, temp files, package caches, project writes — including the escalation those need |
+| What could disturb the machine or another program needs your confirmation | System changes (services, preferences, network configuration, power, disks, processes, global installs) and writes outside the project |
+| Other programs must keep working | Commands that starve the machine or take a shared resource ask first: `dd if=/dev/zero`, `yes >`, unbounded loops, `stress`, `python -m http.server` |
 | Only one confirmation may be outstanding | A single-slot queue in front of the approval seam; system-related requests take the slot before ordinary ones |
 | Every confirmation explains the downside | Each prompt carries a deterministic impact analysis: a level plus the concrete adverse outcome of saying yes |
 
-### How the project gets full permission
+### When the guard is involved — and when it is not
 
-"Automatic full permission" cannot be left to the sandbox's escalation path: the
-Harness only escalates when a tool call *asks* for it (`sandbox_permissions`), so
-a plain in-project write that falls outside the session's sandbox root fails
-first and is retried — the guard looks uninvolved, and sibling project
-directories stay walled off.
+The three permission modes in the picker are the starting point:
 
-Instead the guard raises the sandbox once per session, through the same durable
-write `dsh-sandbox-policy` itself uses (`session.append('sandbox/mode', …)`),
-and that is the documented path the file sandbox and the bash sandbox both
-resolve per call. From then on:
+| Session mode | What the guard does |
+|---|---|
+| **Workspace-write** (default) | Nothing at all, until a call asks for an escalation beyond it. Those requests are the "extra permission" the guard judges: in-project and machine-safe work is granted silently, a system change or an outside write asks, a destructive action is refused |
+| **Full permission** | Every call is gated, because now anything can touch the system. In-project work still passes without a prompt; the rest is judged by effect |
+| **Read-only** | Same as workspace-write: only an escalation request involves the guard |
 
-- **in-project work runs with full permission and no prompt** — including writes
-  to the sibling project directories you configured;
-- **the guard is what decides**, on every call, because it already sees all of
-  them at `tools/pre-execute`;
-- setting `elevateInProject: false` restores the old behaviour (sandbox stays the
-  backstop, so out-of-root in-project calls fail once and rely on a retry with
-  `sandbox_permissions`, which the guard auto-approves).
+It never changes the session's sandbox itself — the mode you pick stays the mode
+you get. What it changes is *what has to be asked when a call wants more*.
 
-The raise happens once per session and only from the shipped default mode
-(`elevateFromMode: workspace-write`), so a preset you deliberately chose — for
-example `read-only` — is never overwritten. The trade-off is explicit: with the
-session at full access, the guard is the only control, which is why its
-classification fails closed and the destructive rules deny rather than ask.
+The test is "can this damage the computer or stop another program working?", not
+"is this inside the project":
+
+- **granted silently** — reads anywhere, `curl`/`wget`/`ssh`/`git push`/uploads,
+  temp files, package caches (`~/.npm`, `~/Library/Caches`, …), project writes,
+  read-only system probes (`ps`, `sw_vers`, `lsof`);
+- **confirmation** — system state changes (`sudo`, `launchctl`, `defaults`,
+  `networksetup`, `pmset`, `diskutil`, `kill`, global installs), writes outside
+  the project, resource exhaustion, port binding;
+- **refused** — the actions that destroy the machine or cut the session.
+
+### How a call is decided
+
+Once the guard is involved, on the `tools/pre-execute` waterfall:
+
+1. **Machine-safe → allow.** Project work, reads anywhere, network traffic and
+   uploads, temp files and package caches. If the call asked for an escalation to
+   do it, the guard grants that escalation silently.
+2. **Could affect the machine or another program → ask.** System state changes
+   and writes outside the project. The user decides, and the prompt carries the
+   consequence analysis.
+3. **Would destroy the machine or cut the session → deny.** Formatting a disk,
+   deleting from `/`, deleting the home directory, powering the machine off,
+   **turning Wi-Fi off**, bringing an interface down, killing
+   `WindowServer`/`launchd`/`Finder`, `kill -9 1`, a fork bomb, or killing the
+   running Harness. A confirmation for these can never be delivered, because the
+   action destroys the session that would show it. Set
+   `protectSessionAndSystem: false` to downgrade them to confirmations.
+
+Anything it cannot read still **fails closed**: uninspectable commands
+(`$(…)`, backticks, `eval`, `node -e`, `python -c`, unbalanced quotes), unknown
+tools, and `$VAR` used as a path all ask first.
 
 ## Why "one at a time" is not cosmetic
 
@@ -79,55 +99,35 @@ The level comes from the verdict category and, for system commands, is refined
 per program (`sudo`, `launchctl`, `defaults`, `kill`, `diskutil`, `pip`,
 `osascript`, …). Refusals state the consequence too, so the model learns why.
 
-## How a call is decided
-
-For every tool call, on the `tools/pre-execute` waterfall:
-
-1. **Inside the project → allow.** If the call asks to escalate its sandbox
-   (`sandbox_permissions`), the plugin grants that escalation silently. A
-   confirmed call never produces a second prompt.
-2. **Outside the project, system-level, or undecidable → ask.** The user decides.
-   After an approval, a later escalation of the *same* call reuses that grant.
-3. **Machine- or session-destroying → deny.** Formatting a disk, deleting from
-   `/`, deleting the home directory, powering the machine off, **turning Wi-Fi
-   off**, bringing an interface down, killing `WindowServer`/`launchd`/`Finder`,
-   `kill -9 1`, a fork bomb, or killing the running Harness. A confirmation for
-   these can never be delivered, because the action destroys the session that
-   would show it (the "Wi-Fi off breaks my train of thought" case). Set
-   `protectSessionAndSystem: false` to downgrade them to confirmations.
-
-Everything else **fails closed**: unreadable commands (`$(…)`, backticks,
-`eval`, `node -e`, `python -c`, unbalanced quotes), unknown tools, and `$VAR`
-used as a path all ask first.
-
-### Decision table (defaults)
+### Decision table (defaults, when the guard is involved)
 
 **Allow silently**
 
-- `read` / `read_image` / `glob` / `grep` under a project root; `write` / `edit`
-  under a writable root
-- `pnpm` / `npm` / `yarn` / `bun` project subcommands; `node`, `python`, `swift`,
-  `make`, `cargo build`, `go test`, `pytest`, `tsc`, …
-- `git add` / `commit` / `checkout` / `diff` / `stash` / …; `mkdir`, `cp`, `mv`,
-  `rm` inside the project; scratch files in `/tmp`
-- Session and read-only tools: `todo_write`, `ask_user_question`, `present`,
-  `skill`, `job_*`, `web_search`, `web_fetch`, `cordis_inspect_*`
+- Every read: `read` / `read_image` / `glob` / `grep` anywhere, `cat`, `ls`, and
+  read-only system probes (`ps`, `sw_vers`, `lsof`, `uname`, `system_profiler`)
+- Network and uploads: `curl`, `wget`, `ssh`, `scp`, `rsync`, `git push|pull|fetch|clone`,
+  `gh`, `aws`, `gcloud`, `docker`, `kubectl`, `npx`, `npm publish`, `npm cache`
+- Project writes: `write` / `edit` inside the project or a configured root,
+  `mkdir`, `cp`, `mv`, `rm` inside the project, builds and tests
+  (`pnpm`, `npm run`, `node`, `pytest`, `cargo build`, `go test`, `make`, `tsc`)
+- Scratch and caches: `/tmp`, `~/.npm`, `~/Library/Caches`, `~/.cargo`, …
+- Session tools: `todo_write`, `ask_user_question`, `present`, `skill`, `job_*`,
+  `web_search`, `web_fetch`, `cordis_inspect_*`
 
 **Ask**
 
-- Any path outside the project
-- System: `sudo`, `launchctl`, `defaults`, `systemsetup`, `scutil`,
+- Writes outside the project: any `write` / `edit` path elsewhere, `echo x > /usr/…`,
+  `rm -rf ../../other-project`, `cp a.txt ~/Desktop/`, `tee /etc/motd`,
+  `chmod -R 777 /`, `find / -delete`
+- System state: `sudo`, `launchctl`, `defaults`, `systemsetup`, `scutil`,
   `networksetup`, `ifconfig`, `ip`, `pfctl`, `pmset`, `diskutil`,
-  `softwareupdate`, `spctl`, `csrutil`, `sysctl`, `system_profiler`, `lsof`,
-  `netstat`, `ps`, `kill`, `killall`, `pkill`, `brew`, `pip`, `conda`,
-  `osascript`, `open`, `xargs`, `updatedb`
-- External: `curl`, `wget`, `ssh`, `scp`, `rsync`, `git push|pull|fetch|clone|remote`,
-  `gh`, `aws`, `gcloud`, `docker`, `kubectl`, `npx`, `pipx`
-- Shared state: `npm publish`, `npm -g`, `npm cache clean`, `git config --global`
+  `softwareupdate`, `sysctl`, `mdutil`, `kill`, `killall`, `pkill`, `brew`,
+  `pip`, `conda`, `osascript`, `open`, `xargs`, `crontab`
+- Shared environment: `npm install -g`, `git config --global`
 - Resource abuse: `dd if=/dev/zero`, `yes >`, `cat /dev/zero`, `mkfile`,
   `fallocate`, `truncate`, `stress`, `while true`, `python -m http.server`
-- Orchestration and plugins: `plugin_manager`, `subagent`, `workflow`,
-  `spawn_teammate`, `schedule_*`, `run_code`, and any unknown tool
+- Uninspectable: `node -e`, `python -c`, `$(…)`, `` `…` ``, `eval`, `$VAR` paths,
+  unbalanced quotes, and any unknown tool
 
 **Deny**
 
@@ -240,9 +240,7 @@ replaces the complete config):
 | `includeTempDirs` | `true` | Treat `/tmp` and `os.tmpdir()` as scratch space |
 | `resolveSymlinks` | `true` | Resolve symlinks before deciding containment |
 | `enforceAskPolicy` | `true` | Switch the session back to the `ask` policy; under `never` every request is rejected before any answerer runs, so no prompt could appear |
-| `elevateInProject` | `true` | Raise the session sandbox once, so in-project work runs with full permission without waiting for a tool to request an escalation |
-| `elevateFromMode` | `workspace-write` | Only raise a session whose sandbox is still at this mode, so a deliberately chosen narrower preset is respected |
-| `elevatedMode` | `danger-full-access` | The mode an in-project session is raised to |
+| `cacheRoots` | `[]` (built-in) | Roots outside the project whose writes are allowed: package caches, alongside the platform temp area |
 | `serializeApprovals` | `true` | At most one outstanding confirmation |
 | `prioritizeSystemRequests` | `true` | System-related confirmations take the single slot first |
 | `protectSessionAndSystem` | `true` | Deny machine- or session-destroying actions |
@@ -286,10 +284,13 @@ queue (no overlap, system priority, abort, unload). The mount script proves
   review mode, or a Codex/Claude hook — can still deny or ask about an in-project
   call. Keep the session on a preset without the Auto reviewer when you want
   in-project work to stay prompt-free.
-- With `elevateInProject` on (the default) the session runs at full access, so
-  inside the project the sandbox is no longer a second opinion: the guard's
-  classification is the control. Set it to `false` to keep the sandbox as the
-  backstop and accept the failed-then-escalated retry for out-of-root paths.
+- The guard judges intent from the tool name, its arguments and the command
+  text. It never rewrites the session's sandbox, so the mode you pick stays the
+  mode you get — and inside the workspace the sandbox, not this plugin, is what
+  confines a command.
+- Because reads and network traffic are never gated, an uninspected command can
+  still move data outward. This guard protects the machine and other programs,
+  not the confidentiality of what the agent reads.
 - The approval policy must be `ask` for confirmations to be possible;
   `enforceAskPolicy` keeps it there while the guard is active.
 

@@ -38,7 +38,7 @@ const check = (label, condition, extra = '') => {
 const ctx = new Context();
 ctx.provide('tools', {});
 ctx.provide('approval', { effectivePolicy: () => 'ask', setPolicy() {} });
-ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'workspace-write', workspaceRoot: CWD }) });
+ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'danger-full-access', workspaceRoot: CWD }) });
 
 const mod = await import('../index.js');
 const fork = ctx.plugin(mod, { projectRoots: [PROJECT] });
@@ -64,16 +64,12 @@ const makeExec = (name, args, callId) => ({
 const preExecute = (exec) => ctx.waterfall(ctx, 'tools/pre-execute', exec, () => Promise.resolve({ kind: 'allow' }));
 const approval = (req) => ctx.waterfall(ctx, 'approval/request', req, () => Promise.resolve('unavailable'));
 
-// 1. An in-project call passes through to the pipeline's allow default, and the
-//    guard has already raised this session's sandbox once.
+// 1. A full-permission session is gated, and in-project work still passes
+//    through without touching the sandbox or prompting.
 const insideExec = makeExec('write', { file_path: 'lib/a.js' }, 'c1');
 const inside = await preExecute(insideExec);
 check('in-project call passes through', inside.kind === 'allow', JSON.stringify(inside));
-check(
-  'in-project session is raised to full access once',
-  insideExec.agent.session.appends.length === 1 && insideExec.agent.session.appends[0].data.mode === 'danger-full-access',
-  JSON.stringify(insideExec.agent.session.appends)
-);
+check('the guard never rewrites the session sandbox', insideExec.agent.session.appends.length === 0, JSON.stringify(insideExec.agent.session.appends));
 
 // 2. An out-of-project call asks, with a bilingual prompt.
 const outside = await preExecute(makeExec('write', { file_path: '/etc/hosts' }, 'c2'));
@@ -90,12 +86,16 @@ prompts = 1; // the fallback above stands in for the user
 const escalation = await approval({ agent, toolName: 'write', callId: 'c2', reason: 'escalate sandbox to danger-full-access: outside root' });
 check('an unanswered record still asks (fail-closed)', escalation === 'unavailable' || escalation === 'rejected' || escalation === 'cancelled', String(escalation));
 
-// 4. A refused action is denied without any approval request.
+// 4. A network call is harmless to the machine, so it is allowed while gated.
+const network = await preExecute(makeExec('bash', { command: 'git push origin main' }, 'c3'));
+check('network calls need no confirmation', network.kind === 'allow', JSON.stringify(network));
+
+// 5. A refused action is denied without any approval request.
 const denied = await preExecute(makeExec('bash', { command: 'shutdown -h now' }, 'c4'));
 check('session-killing action is denied', denied.kind === 'deny', JSON.stringify(denied));
 check('denial carries structured info', denied.info?.code === 'POWER_OFF', JSON.stringify(denied.info));
 
-// 5. Unloading removes every listener: the same call is allowed again.
+// 6. Unloading removes every listener: the same call is allowed again.
 await fork.dispose();
 await new Promise((resolve) => setTimeout(resolve, 20));
 const afterStop = await preExecute(makeExec('bash', { command: 'shutdown -h now' }, 'c5'));

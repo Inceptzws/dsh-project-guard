@@ -22,25 +22,63 @@
 | 请求的许可一次只能出现一条 | 审批通道前加**单槽队列**；系统相关的请求优先占用这个槽位 |
 | 每条确认都说明"答应之后会怎样" | 每条提示都附一份确定性的影响分析：等级 + 具体的不良结果 |
 
-### 项目内的完全权限是怎么给的
+### 什么时候会走插件，什么时候不会
 
-"自动完全权限"不能依赖沙箱的提权通道：Harness 只在工具**主动申请**时才提权
-（`sandbox_permissions`），所以落在会话沙箱根目录之外的项目内写入（比如你配置的
-兄弟项目目录）会先失败、再靠模型重试——看起来插件没参与，而且项目范围被沙箱挡住。
+选择器里的三种模式就是起点：
 
-插件的做法是：**每个会话由插件自己提升一次沙箱**，用的是 `dsh-sandbox-policy`
-自己的持久写入路径（`session.append('sandbox/mode', …)`），而文件沙箱与 bash 沙箱
-确实是逐次调用解析这个会话级模式的。之后：
+| 会话模式 | 插件做什么 |
+|---|---|
+| **工作区内修改**（默认） | 完全不参与；只有某个调用申请超出工作区的提权时才介入。这个"额外授权"由插件判定：项目内、不影响机器的直接放行，改系统或写项目外要确认，破坏性的直接拒绝 |
+| **完全权限** | 每个调用都过一遍，因为此时什么都可能碰到系统。项目内的工作依旧不弹窗，其余按影响判定 |
+| **仅可查看** | 与工作区内修改相同：只有提权请求才会让插件介入 |
 
-- **项目内的工作以完全权限直接执行，不弹窗**——包括写入你配置的兄弟项目目录；
-- **判定权完全在守手里**，因为它在 `tools/pre-execute` 上本来就能看到每一次调用；
-- 把 `elevateInProject` 设为 `false` 可以回到旧行为（沙箱继续兜底：项目内但超出沙箱
-  根目录的调用会先失败一次，再靠带 `sandbox_permissions` 的重试，由守卫自动放行）。
+插件**从不改动会话的沙箱模式**——你选什么就是什么；它改的是"某个调用想要更多权限时，
+哪些必须问你"。
 
-提升每个会话只做一次，且只在仍是出厂默认模式（`elevateFromMode: workspace-write`）
-时做，所以你特意选的更窄的 preset（例如 `read-only`）不会被覆盖。代价是明确的：
-会话处于完全权限时，守卫是唯一的控制点——这也是它为什么失败即确认、并对会造成
-破坏的动作直接拒绝而不是提问。
+判断标准是"会不会损坏计算机、或让别的程序没法正常用"，而不是"在不在项目里"：
+
+- **直接放行** — 任何位置的读取、`curl`/`wget`/`ssh`/`git push`/上传、临时文件、
+  包缓存（`~/.npm`、`~/Library/Caches` 等）、项目内写入、只读系统查询
+  （`ps`、`sw_vers`、`lsof`）；
+- **需要确认** — 改动系统状态（`sudo`、`launchctl`、`defaults`、`networksetup`、
+  `pmset`、`diskutil`、`kill`、全局安装）、写入项目之外、资源耗尽、抢占端口；
+- **直接拒绝** — 会毁机器或断会话的动作。
+
+### 一次调用是怎么被判定的
+
+插件介入后，在 `tools/pre-execute` 瀑布上：
+
+1. **不影响机器 → 放行。** 项目内工作、任何位置的读取、网络与上传、临时文件与包缓存；
+   如果这次调用为此申请了提权，插件静默批准这次提权。
+2. **可能影响机器或其他程序 → 确认。** 改动系统状态、写入项目之外；由你决定，
+   弹窗里带影响分析。
+3. **会毁机器或断会话 → 拒绝。** 格式化磁盘、删文件系统根目录、删家目录、关机重启、
+   **关闭 Wi-Fi**、把网卡拉下来、杀掉 `WindowServer`/`launchd`/`Finder`、
+   杀掉 init、fork 炸弹、杀掉正在运行的 Harness。这些操作一旦执行，
+   承载"确认弹窗"的会话本身就没了。想改成"只确认不拒绝"，把
+   `protectSessionAndSystem` 设为 `false`。
+
+读不懂的仍然**失败即确认**：命令替换、反引号、`eval`、`node -e`、`python -c`、
+引号不配对、未知工具、把 `$VAR` 当路径用。
+
+### 规则一览（默认，仅在插件介入时）
+
+**直接放行**：任何读取（`read`/`read_image`/`glob`/`grep`、`cat`、`ls`、`ps`、`sw_vers`、`lsof`）；
+网络与上传（`curl`、`wget`、`ssh`、`scp`、`rsync`、`git push|pull|fetch|clone`、`gh`、`aws`、
+`gcloud`、`docker`、`kubectl`、`npx`、`npm publish`、`npm cache`）；项目内写入与构建测试；
+临时目录与包缓存；会话内工具（`todo_write`、`ask_user_question`、`present`、`skill`、`job_*`、
+`web_search`、`web_fetch`、`cordis_inspect_*`）。
+
+**需要确认**：项目外写入（任何 `write`/`edit` 到项目外、重定向到系统路径、`rm` 其他项目、
+拷到桌面、`tee /etc/...`、`chmod -R 777 /`、`find / -delete`）；系统状态（`sudo`、`launchctl`、
+`defaults`、`systemsetup`、`scutil`、`networksetup`、`ifconfig`、`ip`、`pfctl`、`pmset`、
+`diskutil`、`softwareupdate`、`sysctl`、`mdutil`、`kill`/`killall`/`pkill`、`brew`、`pip`、
+`conda`、`osascript`、`open`、`xargs`、`crontab`）；共享环境（`npm install -g`、
+`git config --global`）；资源耗尽与抢占端口；无法检查的命令与未知工具。
+
+**直接拒绝**：删文件系统根目录、删家目录、格式化/分区磁盘、向块设备写原始数据、
+`diskutil eraseDisk`、关机重启、关闭 Wi-Fi、把网络接口拉下来、`pfctl -d`、
+杀掉核心系统进程、杀 init、杀掉正在运行的 Harness、fork 炸弹。
 
 ## 为什么"一次一条"不是小事
 
@@ -66,61 +104,6 @@ Harness 每个会话只展示**一个**待处理审批：新的请求会在输�
 等级由判定类别决定；对系统命令还会按具体程序细化（`sudo`、`launchctl`、
 `defaults`、`kill`、`diskutil`、`pip`、`osascript`…）。直接拒绝时同样写明后果，
 让模型知道被拒的原因。
-
-## 一次调用是怎么被判定的
-
-每次工具调用都会经过 `tools/pre-execute`：
-
-1. **项目内 → 放行。** 如果这次调用要提权沙箱（`sandbox_permissions`），插件会
-   静默批准这次提权。已经被确认过的调用不会再弹第二次。
-2. **项目外 / 系统级 / 无法判定 → 确认。** 由你决定。确认通过后，**同一次调用**
-   后续的提权请求复用这次授权。
-3. **会毁机器或断会话 → 直接拒绝。** 格式化磁盘、`rm -rf /`、删家目录、关机重启、
-   **关闭 Wi-Fi**、把网卡 down 掉、杀掉 `WindowServer`/`launchd`/`Finder`、
-   `kill -9 1`、fork 炸弹、杀掉正在运行的 Harness。这些操作一旦执行，
-   承载"确认弹窗"的会话本身就没了（也就是"关 wifi 导致思维断裂"那种情况）。
-   想改成"只确认不拒绝"，把 `protectSessionAndSystem` 设为 `false`。
-
-其余一律**失败即确认**：读不懂的命令（`$(…)`、反引号、`eval`、`node -e`、
-`python -c`、引号不配对）、未知工具、把 `$变量` 当路径用，全部先问你。
-
-### 规则一览（默认）
-
-**直接放行**
-
-- 项目根下的 `read` / `read_image` / `glob` / `grep`；可写根下的 `write` / `edit`
-- `pnpm` / `npm` / `yarn` / `bun` 的项目内子命令；`node`、`python`、`swift`、
-  `make`、`cargo build`、`go test`、`pytest`、`tsc` 等
-- `git add` / `commit` / `checkout` / `diff` / `stash` 等；项目内 `mkdir`、`cp`、
-  `mv`、`rm`；`/tmp` 里的草稿文件
-- 会话内与只读工具：`todo_write`、`ask_user_question`、`present`、`skill`、
-  `job_*`、`web_search`、`web_fetch`、`cordis_inspect_*`
-
-**需要确认**
-
-- 任何项目外的路径
-- 系统类：`sudo`、`launchctl`、`defaults`、`systemsetup`、`scutil`、
-  `networksetup`、`ifconfig`、`ip`、`pfctl`、`pmset`、`diskutil`、
-  `softwareupdate`、`spctl`、`csrutil`、`sysctl`、`system_profiler`、`lsof`、
-  `netstat`、`ps`、`kill`、`killall`、`pkill`、`brew`、`pip`、`conda`、
-  `osascript`、`open`、`xargs`、`updatedb`
-- 对外访问：`curl`、`wget`、`ssh`、`scp`、`rsync`、`git push|pull|fetch|clone|remote`、
-  `gh`、`aws`、`gcloud`、`docker`、`kubectl`、`npx`、`pipx`
-- 共享状态：`npm publish`、`npm -g`、`npm cache clean`、`git config --global`
-- 资源耗尽：`dd if=/dev/zero`、`yes >`、`cat /dev/zero`、`mkfile`、`fallocate`、
-  `truncate`、`stress`、`while true`、`python -m http.server`
-- 编排与插件：`plugin_manager`、`subagent`、`workflow`、`spawn_teammate`、
-  `schedule_*`、`run_code`，以及任何未知工具
-
-**直接拒绝**
-
-- `rm -rf /`、`rm -rf ~`、`rm -rf $HOME`
-- `mkfs`、`newfs`、`fdisk`、`gpt`、`dd … of=/dev/…`、`diskutil eraseDisk`
-- `shutdown`、`reboot`、`halt`
-- `networksetup -setairportpower … off`、`ifconfig … down`、`ip link set … down`、
-  `pfctl -d`、`wg-quick down`
-- `killall WindowServer|loginwindow|launchd|Finder|Dock|mDNSResponder|configd`、
-  `kill -9 1`、`pkill -f "DeepSeek Harness"`、fork 炸弹
 
 ## 安装
 
@@ -216,9 +199,7 @@ dsh --profile web --dump-config | grep -A14 project-guard
 | `includeTempDirs` | `true` | 把 `/tmp`、`os.tmpdir()` 当草稿区 |
 | `resolveSymlinks` | `true` | 判定前解析软链接 |
 | `enforceAskPolicy` | `true` | 会话策略不是 `ask` 时改回 `ask`；`never` 下任何请求都会被直接拒绝，根本弹不出确认 |
-| `elevateInProject` | `true` | 由插件把会话沙箱提升一次，项目内的工作以完全权限直接执行，不必等工具主动申请提权 |
-| `elevateFromMode` | `workspace-write` | 只在会话沙箱仍是此模式时提升，尊重你特意选的更窄 preset |
-| `elevatedMode` | `danger-full-access` | 项目内会话被提升到的模式 |
+| `cacheRoots` | `[]`（内置） | 项目之外允许写入的目录：包缓存（与平台临时区一起），空表示用内置列表 |
 | `serializeApprovals` | `true` | 同一时刻只有一个确认 |
 | `prioritizeSystemRequests` | `true` | 系统相关的确认优先占用槽位 |
 | `protectSessionAndSystem` | `true` | 拒绝"毁机器/断会话"的动作 |
@@ -254,9 +235,10 @@ node test/cordis-mount.mjs       # 在真实 cordis 运行时上挂载插件
 - 其他策略插件依然生效。守卫先跑，放行时只是**委托**给后续监听器，所以别的插件
   （例如 LLM 的 Auto 审查模式、Codex/Claude hook）仍可能对项目内调用拒绝或提问。
   想让项目内工作彻底不弹窗，就别把会话切到带 Auto 审查的 preset。
-- 默认开启 `elevateInProject` 时，会话处于完全权限，项目内不再有沙箱作为第二道判断：
-  守卫的判定就是控制点。想要沙箱继续兜底，把它设为 `false`，代价是超出沙箱根目录的
-  项目内调用会先失败一次、再靠提权重试。
+- 守卫是根据工具名、参数和命令文本判断影响的。它从不改写会话的沙箱模式，所以
+  你选什么模式就是什么模式；工作区内的约束来自沙箱，而不是这个插件。
+- 因为读取和网络通信永不拦截，一条未被检查的命令仍可能把数据送出去。这个守卫保护的是
+  计算机和其他程序的正常使用，而不是代理读到内容的机密性。
 - 要能弹出确认，审批策略必须是 `ask`；`enforceAskPolicy` 会在守卫生效期间保持它。
 
 ## 文件

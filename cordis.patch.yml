@@ -26,17 +26,14 @@
         # actually reach the user. Under `never` every request is rejected
         # before any answerer runs and no prompt can appear.
         enforceAskPolicy: true
-        # Give this project its full permission up front, instead of waiting for
-        # the model to request a sandbox escalation: an in-project write that
-        # falls outside the session sandbox root would otherwise fail first. The
-        # guard remains the only thing deciding what may run. Set false to keep
-        # the sandbox as a backstop and rely on per-call escalations.
-        elevateInProject: true
-        # Raise a session only while its sandbox is still at this mode, so a
-        # deliberately chosen narrower preset is left alone.
-        elevateFromMode: workspace-write
-        # The sandbox mode an in-project session is raised to.
-        elevatedMode: danger-full-access
+        # The guard never changes the session's sandbox mode: whatever you pick
+        # in the permission selector is what you get. It only decides what has to
+        # be asked when a call wants more than that.
+        #
+        # Writable roots outside the project: package caches, alongside the
+        # platform temp area. Empty means the built-in list (~/.npm,
+        # ~/Library/Caches, ~/.cargo, ...).
+        cacheRoots: []
         # Only one confirmation outstanding at a time; system-related requests
         # take the single slot first.
         serializeApprovals: true

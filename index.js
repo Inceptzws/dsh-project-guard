@@ -69,8 +69,6 @@ export function apply(ctx, config) {
   const records = new Map();
   const MAX_RECORDS = 512;
   const queue = createApprovalQueue(policy.config.prioritizeSystemRequests);
-  /** Sessions whose sandbox this plugin has already decided about. */
-  const settled = new WeakSet();
 
   const keyOf = (callId) => (typeof callId === 'string' && callId.length > 0 ? callId : undefined);
 
@@ -95,42 +93,17 @@ export function apply(ctx, config) {
   };
 
   /**
-   * Give this project its full permission up front.
-   *
-   * Waiting for the model to request a sandbox escalation is not "automatic
-   * full permission": a plain in-project write that falls outside the session's
-   * sandbox root fails first and only then, if the model retries with
-   * `sandbox_permissions`, does the guard get a chance to approve. Raising the
-   * session's sandbox to full access once removes that wall, so the guard — and
-   * not the sandbox — is what decides whether something may run.
-   *
-   * The decision is made once per session and only from the shipped default
-   * mode, so a user who deliberately picks a narrower preset keeps it.
+   * The session's effective sandbox mode, when the deployment exposes it. The
+   * guard only engages for full-permission sessions and for calls that ask for
+   * more than the session already has.
    */
-  const ensureProjectElevation = (agent) => {
-    const config = policy.config;
-    if (!config.elevateInProject) return;
-    const session = agent?.session;
-    if (session === undefined || settled.has(session)) return;
+  const sandboxModeOf = (session) => {
     const sandbox = ctx.get('sandboxPolicy');
-    if (sandbox === undefined) return;
-
-    let current;
+    if (sandbox === undefined || typeof sandbox.resolve !== 'function') return undefined;
     try {
-      current = typeof sandbox.resolve === 'function' ? sandbox.resolve({ session })?.mode : undefined;
-    } catch (error) {
-      warn(`project-guard: could not read the sandbox mode: ${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-    settled.add(session);
-    if (current !== config.elevateFromMode) return;
-
-    try {
-      // The durable write path `dsh-sandbox-policy` itself uses.
-      session.append('sandbox/mode', { mode: config.elevatedMode });
-      ctx.logger?.info?.(`project-guard: this project runs with ${config.elevatedMode}; every call is still decided by the guard`);
-    } catch (error) {
-      warn(`project-guard: could not raise the sandbox mode: ${error instanceof Error ? error.message : String(error)}`);
+      return sandbox.resolve({ session })?.mode;
+    } catch {
+      return undefined;
     }
   };
 
@@ -164,12 +137,14 @@ export function apply(ctx, config) {
     const cwd = session?.header?.cwd;
     if (session === undefined || typeof cwd !== 'string' || cwd.length === 0) return next();
 
+    const mode = sandboxModeOf(session);
     let decision;
     try {
-      decision = policy.classify({ tool: exec.name, args: exec.arguments, cwd });
+      decision = policy.classify({ tool: exec.name, args: exec.arguments, cwd, mode });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       decision = {
+        engage: true,
         kind: 'ask',
         scope: 'unknown',
         code: 'CLASSIFIER_FAILURE',
@@ -181,10 +156,13 @@ export function apply(ctx, config) {
       warn(`project-guard: classifier failure for ${exec.name}: ${message}`);
     }
 
+    // Work that stays inside the workspace is already confined by the sandbox:
+    // the guard does not take part in it at all.
+    if (decision.engage === false) return next();
+
     remember(exec, session, decision);
 
     if (policy.config.enforceAskPolicy) ensureAskPolicy(agent);
-    ensureProjectElevation(agent);
     log(`project-guard: ${decision.kind} ${exec.name} (${decision.code})${decision.detail === undefined ? '' : ` — ${decision.detail}`}`);
 
     if (decision.kind === 'allow') return next();

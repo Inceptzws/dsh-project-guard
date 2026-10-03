@@ -13,8 +13,14 @@ import { apply, inject, name } from '../index.js';
 const CWD = '/Users/inception/Documents/deepseek-harness/default-workspace';
 const PROJECT = '/Users/inception/Documents/deepseek-harness';
 
-/** Build a mock context that records listeners and can dispose the plugin. */
-function createContext(approvalOverride, sandboxMode = 'workspace-write') {
+/**
+ * Build a mock context that records listeners and can dispose the plugin.
+ *
+ * The default session runs at full permission, which is when the guard gate is
+ * meant to see every call; `workspace-write` models the ordinary session where
+ * only an escalation request involves the guard.
+ */
+function createContext(approvalOverride, sandboxMode = 'danger-full-access') {
   const listeners = new Map();
   const disposers = [];
   const effects = [];
@@ -95,47 +101,58 @@ test('the plugin exports the ids the loader expects', () => {
   assert.deepEqual(inject, ['tools', 'approval']);
 });
 
-test('the project is raised to full permission once, by the plugin itself', async () => {
-  const ctx = createContext();
+test('a workspace session is left alone unless a call asks for more', async () => {
+  const ctx = createContext('ask', 'workspace-write');
   apply(ctx, { projectRoots: [PROJECT] });
   const gate = listenerFor(ctx, 'tools/pre-execute');
+  const answerer = listenerFor(ctx, 'approval/request');
 
-  const first = execution('write', { file_path: 'lib/a.js' }, 'e1');
-  await gate.listener(first, async () => ({ kind: 'allow' }));
-  assert.deepEqual(first.agent.session.appends, [{ type: 'sandbox/mode', data: { mode: 'danger-full-access' } }]);
+  // Nothing is asked, nothing is recorded, and no sandbox write happens.
+  let reached = false;
+  const plain = execution('write', { file_path: 'lib/a.js' }, 'w1');
+  const decision = await gate.listener(plain, async () => {
+    reached = true;
+    return { kind: 'allow' };
+  });
+  assert.equal(reached, true);
+  assert.deepEqual(decision, { kind: 'allow' });
+  assert.deepEqual(plain.agent.session.appends, []);
 
-  // A second call in the same session must not append again.
-  const second = execution('write', { file_path: 'lib/b.js' }, 'e2');
-  second.agent.session = first.agent.session;
-  await gate.listener(second, async () => ({ kind: 'allow' }));
-  assert.equal(first.agent.session.appends.length, 1);
+  // The same call asking for an escalation is classified, and in-project work
+  // is granted without a prompt.
+  const escalated = execution('write', { file_path: 'lib/a.js', sandbox_permissions: 'danger-full-access', justification: 'x' }, 'w2');
+  const granted = await gate.listener(escalated, async () => ({ kind: 'allow' }));
+  assert.deepEqual(granted, { kind: 'allow' });
+
+  // A risky escalation asks.
+  const risky = execution('bash', { command: 'brew install jq', sandbox_permissions: 'danger-full-access', justification: 'x' }, 'w3');
+  const asked = await gate.listener(risky, async () => ({ kind: 'allow' }));
+  assert.equal(asked.kind, 'ask');
+  assert.match(asked.displayReason.zh, /可能的不良结果/);
+
+  // An approval request with no recorded call is still serialized to the human.
+  let prompted = false;
+  const outcome = await answerer.listener({ agent: plain.agent, toolName: 'write', callId: 'unknown-call', reason: 'x' }, async () => {
+    prompted = true;
+    return 'allowed-once';
+  });
+  assert.equal(outcome, 'allowed-once');
+  assert.equal(prompted, true);
 });
 
-test('a deliberately narrow sandbox is respected and never raised', async () => {
-  const ctx = createContext('ask', 'read-only');
-  apply(ctx, { projectRoots: [PROJECT] });
-  const gate = listenerFor(ctx, 'tools/pre-execute');
-  const call = execution('write', { file_path: 'lib/a.js' }, 'e3');
-  await gate.listener(call, async () => ({ kind: 'allow' }));
-  assert.deepEqual(call.agent.session.appends, []);
-});
-
-test('elevation can be switched off, and needs no sandbox service to load', async () => {
-  const off = createContext();
-  apply(off, { projectRoots: [PROJECT], elevateInProject: false });
-  const gateOff = listenerFor(off, 'tools/pre-execute');
-  const callOff = execution('write', { file_path: 'lib/a.js' }, 'e4');
-  await gateOff.listener(callOff, async () => ({ kind: 'allow' }));
-  assert.deepEqual(callOff.agent.session.appends, []);
+test('a full-permission session gates every call, and needs no sandbox service to load', async () => {
+  const full = createContext('ask', 'danger-full-access');
+  apply(full, { projectRoots: [PROJECT] });
+  const gateFull = listenerFor(full, 'tools/pre-execute');
+  const decision = await gateFull.listener(execution('mystery_tool', {}, 'f1'), async () => ({ kind: 'allow' }));
+  assert.equal(decision.kind, 'ask');
 
   const noService = createContext();
   noService.get = (service) => (service === 'approval' ? noService.approval : undefined);
   apply(noService, { projectRoots: [PROJECT] });
   const gateNo = listenerFor(noService, 'tools/pre-execute');
-  const callNo = execution('write', { file_path: 'lib/a.js' }, 'e5');
-  const decision = await gateNo.listener(callNo, async () => ({ kind: 'allow' }));
-  assert.deepEqual(decision, { kind: 'allow' });
-  assert.deepEqual(callNo.agent.session.appends, []);
+  const inProject = await gateNo.listener(execution('write', { file_path: 'lib/a.js' }, 'f2'), async () => ({ kind: 'allow' }));
+  assert.deepEqual(inProject, { kind: 'allow' });
 });
 
 test('in-project calls pass straight through', async () => {
