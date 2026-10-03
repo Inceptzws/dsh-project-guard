@@ -125,6 +125,18 @@ app works:
   /opt/homebrew/bin/dsh plugin --profile web add /absolute/path/to/dsh-project-guard
 ```
 
+### Manual install (advanced)
+
+The Plugins page is the supported route. The two steps it performs are:
+
+1. `pnpm add link:<absolute bundle directory>` inside `$DSH_HOME/profiles/<profile>`
+2. append the bundle name to that profile's `dsh.profile.bundles` (the dependency
+   alone is not enough — a bundle is only composed when it is listed)
+
+Then confirm the composition with `dsh --profile <profile> --dump-config`. The
+`desktop` profile rejects every CLI invocation from outside the Electron app, so
+use the Plugins page there.
+
 ### Confirm the composition
 
 ```sh
@@ -193,6 +205,11 @@ the installed runtime.
   across them.
 - Direct Node side effects inside a `run_code` program bypass inner-tool review,
   which is why `run_code` asks by default.
+- Other policy plugins still apply. The guard runs first and only *delegates*
+  on allow, so a `tools/pre-execute` listener from another plugin — the LLM Auto
+  review mode, or a Codex/Claude hook — can still deny or ask about an in-project
+  call. Keep the session on a preset without the Auto reviewer when you want
+  in-project work to stay prompt-free.
 - It does not replace the host sandbox: the sandbox stays the last line of
   defence, and this plugin only decides whether *you* need to be asked.
 - The approval policy must be `ask` for confirmations to be possible;

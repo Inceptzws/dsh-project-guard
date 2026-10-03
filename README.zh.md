@@ -114,6 +114,17 @@ dsh plugin --profile web remove dsh-project-guard
   /opt/homebrew/bin/dsh plugin --profile web add /absolute/path/to/dsh-project-guard
 ```
 
+### 手动安装（进阶）
+
+插件页是受支持的路径；它实际执行的是两步：
+
+1. 在 `$DSH_HOME/profiles/<profile>` 里执行 `pnpm add link:<bundle 绝对路径>`
+2. 把 bundle 名字追加到该 profile 的 `dsh.profile.bundles`（只加依赖不够，
+   必须列进 bundles 才会被组合）
+
+然后用 `dsh --profile <profile> --dump-config` 确认组合结果。`desktop` profile
+会拒绝来自 Electron App 之外的一切 CLI 调用，所以那种情况只能走插件页。
+
 ### 确认组合结果
 
 ```sh
@@ -176,6 +187,9 @@ node test/cordis-mount.mjs       # 在真实 cordis 运行时上挂载插件
   所以"一次一条"对它们同样成立。
 - `run_code` 程序内部直接调用 Node API 的副作用不经过内层工具审查，因此默认按
   "确认"处理。
+- 其他策略插件依然生效。守卫先跑，放行时只是**委托**给后续监听器，所以别的插件
+  （例如 LLM 的 Auto 审查模式、Codex/Claude hook）仍可能对项目内调用拒绝或提问。
+  想让项目内工作彻底不弹窗，就别把会话切到带 Auto 审查的 preset。
 - 它不替代宿主沙箱：沙箱仍是最后一道兜底，本插件只决定"要不要问你"。
 - 要能弹出确认，审批策略必须是 `ask`；`enforceAskPolicy` 会在守卫生效期间保持它。
 
