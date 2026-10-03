@@ -253,7 +253,7 @@ replaces the complete config):
 ## Verify
 
 ```sh
-node --test test/*.test.mjs      # 47 unit and integration tests
+node --test test/*.test.mjs      # 46 unit and integration tests
 node test/cordis-mount.mjs       # mounts the plugin on the real cordis runtime
 ```
 

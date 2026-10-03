@@ -212,7 +212,7 @@ dsh --profile web --dump-config | grep -A14 project-guard
 ## 验证
 
 ```sh
-node --test test/*.test.mjs      # 47 个单元与集成用例
+node --test test/*.test.mjs      # 46 个单元与集成用例
 node test/cordis-mount.mjs       # 在真实 cordis 运行时上挂载插件
 ```
 
