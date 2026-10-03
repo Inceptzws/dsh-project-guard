@@ -141,18 +141,39 @@ used as a path all ask first.
 
 ## Install
 
-The bundle lives in this directory and is a standard Harness bundle: its
-`package.json` declares `dsh.bundle.patch` and it has no dependencies.
+The package is a standard Harness bundle: its `package.json` declares
+`dsh.bundle.patch`, it has no dependencies and it needs no build step.
 
-### Desktop app (recommended)
+### From GitHub (anyone)
+
+```sh
+dsh plugin --profile <profile> add github:Inceptzws/dsh-project-guard
+# remove again:
+dsh plugin --profile <profile> remove dsh-project-guard
+```
+
+The command installs the package and selects its bundle. Confirm the result:
+
+```sh
+dsh --profile <profile> --dump-config | grep -A14 project-guard
+```
+
+`dsh` needs Node 24 or newer (`import.meta.main`); the runtime bundled with the
+Desktop app works:
+
+```sh
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node" \
+  /opt/homebrew/bin/dsh plugin --profile web add github:Inceptzws/dsh-project-guard
+```
+
+### Desktop app (recommended there)
 
 The `desktop` profile is owned exclusively by the Electron app, so its plugins
 are installed from the app itself:
 
 1. Open **Settings → Plugins** (设置 → 插件).
-2. Choose **Install bundle** and pick the absolute package directory:
-   `/Users/inception/Documents/deepseek-harness/default-workspace/dsh-project-guard`
-   (any checkout path works).
+2. Choose **Install bundle** and give either the spec
+   `github:Inceptzws/dsh-project-guard` or the absolute path of a local checkout.
 3. The Plugins page reports the installation result and any warning; the new
    `project-guard` row appears there and is active immediately.
 
