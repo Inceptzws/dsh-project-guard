@@ -1,0 +1,46 @@
+{
+  "name": "dsh-project-guard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Project-scoped automatic full permissions for DeepSeek Harness, with one-at-a-time user confirmation for everything outside the project and for system-level work.",
+  "icon": "./icon.svg",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "locale/*.json",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "plugin",
+    "permissions",
+    "approval",
+    "sandbox",
+    "guard"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Inceptzws/dsh-project-guard.git"
+  }
+}

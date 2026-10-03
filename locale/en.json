@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Project Guard (auto full access)",
+    "description": "Runs project-local work with full access and no prompts; asks once at a time for anything outside the project or touching the system."
+  }
+}

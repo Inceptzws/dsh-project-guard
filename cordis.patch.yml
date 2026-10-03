@@ -1,0 +1,49 @@
+# Project guard — the profile row.
+#
+# Inserted after every bundle layer. Edit the config here; the values below are
+# the shipped defaults for this machine.
+- insert:
+    - id: project-guard
+      name: dsh-project-guard
+      config:
+        # Master switch. Set to false to hand control back to the normal
+        # sandbox/approval behaviour without removing the package.
+        enabled: true
+        # Extra project roots. Change this to your own project parent: the
+        # session workspace (its cwd) is already a root whenever
+        # includeSessionCwd is true, so this entry only widens the scope to the
+        # sibling projects next to it.
+        projectRoots:
+          - /Users/inception/Documents/deepseek-harness
+        includeSessionCwd: true
+        # Roots that may be read but never written. Add the Harness install
+        # directory here if reading its sources should not prompt:
+        #   - /Applications/DeepSeek Harness.app
+        readOnlyRoots: []
+        # Scratch space. The host sandbox already treats it as writable.
+        includeTempDirs: true
+        # Keep the session on the `ask` approval policy so confirmations can
+        # actually reach the user. Under `never` every request is rejected
+        # before any answerer runs and no prompt can appear.
+        enforceAskPolicy: true
+        # Only one confirmation outstanding at a time; system-related requests
+        # take the single slot first.
+        serializeApprovals: true
+        prioritizeSystemRequests: true
+        # Refuse actions that would damage the machine or cut this session
+        # (disk formatting, deleting from `/`, power off, Wi-Fi off, killing
+        # core system processes). Set false to downgrade them to confirmations.
+        protectSessionAndSystem: true
+        resolveSymlinks: true
+        # `python -c`, `node -e`, `$(...)`, `eval` and similar uninspectable
+        # text ask first. Set true to let them run inside the project.
+        allowInlineCode: false
+        # Extra tools to always allow / always ask about / deny.
+        allowTools: []
+        askTools: []
+        denyTools: []
+        # Extra system program names and regular expressions.
+        systemCommands: []
+        extraAskPatterns: []
+        extraAllowPatterns: []
+        verbose: false
