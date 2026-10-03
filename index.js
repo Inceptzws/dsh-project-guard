@@ -69,6 +69,8 @@ export function apply(ctx, config) {
   const records = new Map();
   const MAX_RECORDS = 512;
   const queue = createApprovalQueue(policy.config.prioritizeSystemRequests);
+  /** Sessions whose sandbox this plugin has already decided about. */
+  const settled = new WeakSet();
 
   const keyOf = (callId) => (typeof callId === 'string' && callId.length > 0 ? callId : undefined);
 
@@ -90,6 +92,46 @@ export function apply(ctx, config) {
     const record = records.get(key);
     if (record === undefined || record.session !== req.agent?.session) return undefined;
     return record;
+  };
+
+  /**
+   * Give this project its full permission up front.
+   *
+   * Waiting for the model to request a sandbox escalation is not "automatic
+   * full permission": a plain in-project write that falls outside the session's
+   * sandbox root fails first and only then, if the model retries with
+   * `sandbox_permissions`, does the guard get a chance to approve. Raising the
+   * session's sandbox to full access once removes that wall, so the guard — and
+   * not the sandbox — is what decides whether something may run.
+   *
+   * The decision is made once per session and only from the shipped default
+   * mode, so a user who deliberately picks a narrower preset keeps it.
+   */
+  const ensureProjectElevation = (agent) => {
+    const config = policy.config;
+    if (!config.elevateInProject) return;
+    const session = agent?.session;
+    if (session === undefined || settled.has(session)) return;
+    const sandbox = ctx.get('sandboxPolicy');
+    if (sandbox === undefined) return;
+
+    let current;
+    try {
+      current = typeof sandbox.resolve === 'function' ? sandbox.resolve({ session })?.mode : undefined;
+    } catch (error) {
+      warn(`project-guard: could not read the sandbox mode: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    settled.add(session);
+    if (current !== config.elevateFromMode) return;
+
+    try {
+      // The durable write path `dsh-sandbox-policy` itself uses.
+      session.append('sandbox/mode', { mode: config.elevatedMode });
+      ctx.logger?.info?.(`project-guard: this project runs with ${config.elevatedMode}; every call is still decided by the guard`);
+    } catch (error) {
+      warn(`project-guard: could not raise the sandbox mode: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
   /**
@@ -142,6 +184,7 @@ export function apply(ctx, config) {
     remember(exec, session, decision);
 
     if (policy.config.enforceAskPolicy) ensureAskPolicy(agent);
+    ensureProjectElevation(agent);
     log(`project-guard: ${decision.kind} ${exec.name} (${decision.code})${decision.detail === undefined ? '' : ` — ${decision.detail}`}`);
 
     if (decision.kind === 'allow') return next();
@@ -221,5 +264,5 @@ export function apply(ctx, config) {
     };
   }, 'project-guard lifecycle');
 
-  ctx.logger?.info?.('project-guard: active; in-project work is auto-approved, everything else asks once at a time');
+  ctx.logger?.info?.('project-guard: active; this project runs with full permission and every call is decided here, everything else asks once at a time');
 }

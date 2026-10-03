@@ -22,6 +22,26 @@
 | 请求的许可一次只能出现一条 | 审批通道前加**单槽队列**；系统相关的请求优先占用这个槽位 |
 | 每条确认都说明"答应之后会怎样" | 每条提示都附一份确定性的影响分析：等级 + 具体的不良结果 |
 
+### 项目内的完全权限是怎么给的
+
+"自动完全权限"不能依赖沙箱的提权通道：Harness 只在工具**主动申请**时才提权
+（`sandbox_permissions`），所以落在会话沙箱根目录之外的项目内写入（比如你配置的
+兄弟项目目录）会先失败、再靠模型重试——看起来插件没参与，而且项目范围被沙箱挡住。
+
+插件的做法是：**每个会话由插件自己提升一次沙箱**，用的是 `dsh-sandbox-policy`
+自己的持久写入路径（`session.append('sandbox/mode', …)`），而文件沙箱与 bash 沙箱
+确实是逐次调用解析这个会话级模式的。之后：
+
+- **项目内的工作以完全权限直接执行，不弹窗**——包括写入你配置的兄弟项目目录；
+- **判定权完全在守手里**，因为它在 `tools/pre-execute` 上本来就能看到每一次调用；
+- 把 `elevateInProject` 设为 `false` 可以回到旧行为（沙箱继续兜底：项目内但超出沙箱
+  根目录的调用会先失败一次，再靠带 `sandbox_permissions` 的重试，由守卫自动放行）。
+
+提升每个会话只做一次，且只在仍是出厂默认模式（`elevateFromMode: workspace-write`）
+时做，所以你特意选的更窄的 preset（例如 `read-only`）不会被覆盖。代价是明确的：
+会话处于完全权限时，守卫是唯一的控制点——这也是它为什么失败即确认、并对会造成
+破坏的动作直接拒绝而不是提问。
+
 ## 为什么"一次一条"不是小事
 
 Harness 每个会话只展示**一个**待处理审批：新的请求会在输入框位置**顶替**旧的，
@@ -176,6 +196,9 @@ dsh --profile web --dump-config | grep -A14 project-guard
 | `includeTempDirs` | `true` | 把 `/tmp`、`os.tmpdir()` 当草稿区 |
 | `resolveSymlinks` | `true` | 判定前解析软链接 |
 | `enforceAskPolicy` | `true` | 会话策略不是 `ask` 时改回 `ask`；`never` 下任何请求都会被直接拒绝，根本弹不出确认 |
+| `elevateInProject` | `true` | 由插件把会话沙箱提升一次，项目内的工作以完全权限直接执行，不必等工具主动申请提权 |
+| `elevateFromMode` | `workspace-write` | 只在会话沙箱仍是此模式时提升，尊重你特意选的更窄 preset |
+| `elevatedMode` | `danger-full-access` | 项目内会话被提升到的模式 |
 | `serializeApprovals` | `true` | 同一时刻只有一个确认 |
 | `prioritizeSystemRequests` | `true` | 系统相关的确认优先占用槽位 |
 | `protectSessionAndSystem` | `true` | 拒绝"毁机器/断会话"的动作 |
@@ -188,12 +211,13 @@ dsh --profile web --dump-config | grep -A14 project-guard
 ## 验证
 
 ```sh
-node --test test/*.test.mjs      # 44 个单元与集成用例
+node --test test/*.test.mjs      # 47 个单元与集成用例
 node test/cordis-mount.mjs       # 在真实 cordis 运行时上挂载插件
 ```
 
 单元测试钉住了三类判定（放行/确认/拒绝）、软链接与 `..` 逃逸、heredoc 与重定向
-解析、内联代码与 `eval`、资源耗尽、提权授权复用、影响等级与文案，以及单槽队列
+解析、内联代码与 `eval`、资源耗尽、提权授权复用、影响等级与文案、沙箱一次性提升，
+以及单槽队列
 （并发不重叠、系统优先、可中止、卸载可释放）。挂载脚本在已安装的真实运行时上验证
 `ctx.effect(function* …)` 的卸载、`{ prepend: true }` 的顺序和 `ctx.waterfall` 合约。
 
@@ -210,7 +234,9 @@ node test/cordis-mount.mjs       # 在真实 cordis 运行时上挂载插件
 - 其他策略插件依然生效。守卫先跑，放行时只是**委托**给后续监听器，所以别的插件
   （例如 LLM 的 Auto 审查模式、Codex/Claude hook）仍可能对项目内调用拒绝或提问。
   想让项目内工作彻底不弹窗，就别把会话切到带 Auto 审查的 preset。
-- 它不替代宿主沙箱：沙箱仍是最后一道兜底，本插件只决定"要不要问你"。
+- 默认开启 `elevateInProject` 时，会话处于完全权限，项目内不再有沙箱作为第二道判断：
+  守卫的判定就是控制点。想要沙箱继续兜底，把它设为 `false`，代价是超出沙箱根目录的
+  项目内调用会先失败一次、再靠提权重试。
 - 要能弹出确认，审批策略必须是 `ask`；`enforceAskPolicy` 会在守卫生效期间保持它。
 
 ## 文件

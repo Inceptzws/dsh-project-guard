@@ -38,6 +38,7 @@ const check = (label, condition, extra = '') => {
 const ctx = new Context();
 ctx.provide('tools', {});
 ctx.provide('approval', { effectivePolicy: () => 'ask', setPolicy() {} });
+ctx.provide('sandboxPolicy', { resolve: () => ({ mode: 'workspace-write', workspaceRoot: CWD }) });
 
 const mod = await import('../index.js');
 const fork = ctx.plugin(mod, { projectRoots: [PROJECT] });
@@ -48,16 +49,31 @@ const makeExec = (name, args, callId) => ({
   callId,
   name,
   arguments: args,
-  agent: { session: { header: { cwd: CWD } } },
+  agent: {
+    session: {
+      header: { cwd: CWD },
+      appends: [],
+      append(type, data) {
+        this.appends.push({ type, data });
+      }
+    }
+  },
   signal: new AbortController().signal
 });
 
 const preExecute = (exec) => ctx.waterfall(ctx, 'tools/pre-execute', exec, () => Promise.resolve({ kind: 'allow' }));
 const approval = (req) => ctx.waterfall(ctx, 'approval/request', req, () => Promise.resolve('unavailable'));
 
-// 1. An in-project call passes through to the pipeline's allow default.
-const inside = await preExecute(makeExec('write', { file_path: 'lib/a.js' }, 'c1'));
+// 1. An in-project call passes through to the pipeline's allow default, and the
+//    guard has already raised this session's sandbox once.
+const insideExec = makeExec('write', { file_path: 'lib/a.js' }, 'c1');
+const inside = await preExecute(insideExec);
 check('in-project call passes through', inside.kind === 'allow', JSON.stringify(inside));
+check(
+  'in-project session is raised to full access once',
+  insideExec.agent.session.appends.length === 1 && insideExec.agent.session.appends[0].data.mode === 'danger-full-access',
+  JSON.stringify(insideExec.agent.session.appends)
+);
 
 // 2. An out-of-project call asks, with a bilingual prompt.
 const outside = await preExecute(makeExec('write', { file_path: '/etc/hosts' }, 'c2'));

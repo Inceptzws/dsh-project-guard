@@ -14,10 +14,14 @@ const CWD = '/Users/inception/Documents/deepseek-harness/default-workspace';
 const PROJECT = '/Users/inception/Documents/deepseek-harness';
 
 /** Build a mock context that records listeners and can dispose the plugin. */
-function createContext(approvalOverride) {
+function createContext(approvalOverride, sandboxMode = 'workspace-write') {
   const listeners = new Map();
   const disposers = [];
   const effects = [];
+  const sandboxPolicy = {
+    resolve: () => ({ mode: sandboxPolicy.mode ?? sandboxMode, workspaceRoot: CWD }),
+    mode: sandboxMode
+  };
   const approval = {
     effectivePolicy: () => approvalOverride ?? 'ask',
     setPolicy: () => {
@@ -28,8 +32,11 @@ function createContext(approvalOverride) {
   const ctx = {
     logger: { info() {}, warn() {}, debug() {} },
     approval,
+    sandboxPolicy,
     get(service) {
-      return service === 'approval' ? approval : undefined;
+      if (service === 'approval') return approval;
+      if (service === 'sandboxPolicy') return sandboxPolicy;
+      return undefined;
     },
     on(event, listener, options) {
       const entry = { listener, options };
@@ -73,13 +80,62 @@ function listenerFor(ctx, event) {
 
 /** Build a fake tool execution record. */
 function execution(toolName, args, callId = 'call-1') {
-  const session = { header: { cwd: CWD } };
+  const session = {
+    header: { cwd: CWD },
+    appends: [],
+    append(type, data) {
+      session.appends.push({ type, data });
+    }
+  };
   return { callId, name: toolName, arguments: args, agent: { session } };
 }
 
 test('the plugin exports the ids the loader expects', () => {
   assert.equal(name, 'project-guard');
   assert.deepEqual(inject, ['tools', 'approval']);
+});
+
+test('the project is raised to full permission once, by the plugin itself', async () => {
+  const ctx = createContext();
+  apply(ctx, { projectRoots: [PROJECT] });
+  const gate = listenerFor(ctx, 'tools/pre-execute');
+
+  const first = execution('write', { file_path: 'lib/a.js' }, 'e1');
+  await gate.listener(first, async () => ({ kind: 'allow' }));
+  assert.deepEqual(first.agent.session.appends, [{ type: 'sandbox/mode', data: { mode: 'danger-full-access' } }]);
+
+  // A second call in the same session must not append again.
+  const second = execution('write', { file_path: 'lib/b.js' }, 'e2');
+  second.agent.session = first.agent.session;
+  await gate.listener(second, async () => ({ kind: 'allow' }));
+  assert.equal(first.agent.session.appends.length, 1);
+});
+
+test('a deliberately narrow sandbox is respected and never raised', async () => {
+  const ctx = createContext('ask', 'read-only');
+  apply(ctx, { projectRoots: [PROJECT] });
+  const gate = listenerFor(ctx, 'tools/pre-execute');
+  const call = execution('write', { file_path: 'lib/a.js' }, 'e3');
+  await gate.listener(call, async () => ({ kind: 'allow' }));
+  assert.deepEqual(call.agent.session.appends, []);
+});
+
+test('elevation can be switched off, and needs no sandbox service to load', async () => {
+  const off = createContext();
+  apply(off, { projectRoots: [PROJECT], elevateInProject: false });
+  const gateOff = listenerFor(off, 'tools/pre-execute');
+  const callOff = execution('write', { file_path: 'lib/a.js' }, 'e4');
+  await gateOff.listener(callOff, async () => ({ kind: 'allow' }));
+  assert.deepEqual(callOff.agent.session.appends, []);
+
+  const noService = createContext();
+  noService.get = (service) => (service === 'approval' ? noService.approval : undefined);
+  apply(noService, { projectRoots: [PROJECT] });
+  const gateNo = listenerFor(noService, 'tools/pre-execute');
+  const callNo = execution('write', { file_path: 'lib/a.js' }, 'e5');
+  const decision = await gateNo.listener(callNo, async () => ({ kind: 'allow' }));
+  assert.deepEqual(decision, { kind: 'allow' });
+  assert.deepEqual(callNo.agent.session.appends, []);
 });
 
 test('in-project calls pass straight through', async () => {

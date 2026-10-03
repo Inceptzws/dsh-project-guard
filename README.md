@@ -23,6 +23,33 @@ code, and no build step. `index.js` plus four small modules is the whole plugin.
 | Only one confirmation may be outstanding | A single-slot queue in front of the approval seam; system-related requests take the slot before ordinary ones |
 | Every confirmation explains the downside | Each prompt carries a deterministic impact analysis: a level plus the concrete adverse outcome of saying yes |
 
+### How the project gets full permission
+
+"Automatic full permission" cannot be left to the sandbox's escalation path: the
+Harness only escalates when a tool call *asks* for it (`sandbox_permissions`), so
+a plain in-project write that falls outside the session's sandbox root fails
+first and is retried — the guard looks uninvolved, and sibling project
+directories stay walled off.
+
+Instead the guard raises the sandbox once per session, through the same durable
+write `dsh-sandbox-policy` itself uses (`session.append('sandbox/mode', …)`),
+and that is the documented path the file sandbox and the bash sandbox both
+resolve per call. From then on:
+
+- **in-project work runs with full permission and no prompt** — including writes
+  to the sibling project directories you configured;
+- **the guard is what decides**, on every call, because it already sees all of
+  them at `tools/pre-execute`;
+- setting `elevateInProject: false` restores the old behaviour (sandbox stays the
+  backstop, so out-of-root in-project calls fail once and rely on a retry with
+  `sandbox_permissions`, which the guard auto-approves).
+
+The raise happens once per session and only from the shipped default mode
+(`elevateFromMode: workspace-write`), so a preset you deliberately chose — for
+example `read-only` — is never overwritten. The trade-off is explicit: with the
+session at full access, the guard is the only control, which is why its
+classification fails closed and the destructive rules deny rather than ask.
+
 ## Why "one at a time" is not cosmetic
 
 Harness projects **one** pending approval per session. A newer request
@@ -192,6 +219,9 @@ replaces the complete config):
 | `includeTempDirs` | `true` | Treat `/tmp` and `os.tmpdir()` as scratch space |
 | `resolveSymlinks` | `true` | Resolve symlinks before deciding containment |
 | `enforceAskPolicy` | `true` | Switch the session back to the `ask` policy; under `never` every request is rejected before any answerer runs, so no prompt could appear |
+| `elevateInProject` | `true` | Raise the session sandbox once, so in-project work runs with full permission without waiting for a tool to request an escalation |
+| `elevateFromMode` | `workspace-write` | Only raise a session whose sandbox is still at this mode, so a deliberately chosen narrower preset is respected |
+| `elevatedMode` | `danger-full-access` | The mode an in-project session is raised to |
 | `serializeApprovals` | `true` | At most one outstanding confirmation |
 | `prioritizeSystemRequests` | `true` | System-related confirmations take the single slot first |
 | `protectSessionAndSystem` | `true` | Deny machine- or session-destroying actions |
@@ -204,13 +234,14 @@ replaces the complete config):
 ## Verify
 
 ```sh
-node --test test/*.test.mjs      # 44 unit and integration tests
+node --test test/*.test.mjs      # 47 unit and integration tests
 node test/cordis-mount.mjs       # mounts the plugin on the real cordis runtime
 ```
 
 The unit suite pins the three promises (allow / ask / deny), symlink and `..`
 escapes, heredoc and redirection parsing, inline code and `eval`, resource
-exhaustion, escalation reuse, the impact levels and texts, and the single-slot
+exhaustion, escalation reuse, the impact levels and texts, the one-time
+sandbox raise, and the single-slot
 queue (no overlap, system priority, abort, unload). The mount script proves
 `ctx.effect(function* …)` teardown, `{ prepend: true }` ordering and the
 `ctx.waterfall` contract against the installed runtime.
@@ -234,8 +265,10 @@ queue (no overlap, system priority, abort, unload). The mount script proves
   review mode, or a Codex/Claude hook — can still deny or ask about an in-project
   call. Keep the session on a preset without the Auto reviewer when you want
   in-project work to stay prompt-free.
-- It does not replace the host sandbox: the sandbox stays the last line of
-  defence, and this plugin only decides whether *you* need to be asked.
+- With `elevateInProject` on (the default) the session runs at full access, so
+  inside the project the sandbox is no longer a second opinion: the guard's
+  classification is the control. Set it to `false` to keep the sandbox as the
+  backstop and accept the failed-then-escalated retry for out-of-root paths.
 - The approval policy must be `ask` for confirmations to be possible;
   `enforceAskPolicy` keeps it there while the guard is active.
 
