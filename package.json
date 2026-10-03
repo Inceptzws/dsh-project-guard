@@ -1,11 +1,13 @@
 {
   "name": "dsh-project-guard",
   "version": "1.0.0",
-  "private": true,
   "description": "Permission guard for DeepSeek Harness: work inside the workspace is never interrupted, and only the extra permission a call asks for is judged — machine-safe actions pass, system changes ask with a consequence analysis, destructive ones are refused.",
   "icon": "./icon.svg",
   "type": "module",
   "main": "index.js",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",
