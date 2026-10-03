@@ -145,7 +145,7 @@ replaces the complete config):
   name: dsh-project-guard
   config:
     projectRoots:
-      - /Users/you/Documents/deepseek-harness   # sibling projects in this tree
+      - ~/Documents/deepseek-harness            # `~` is expanded; siblings in this tree
     readOnlyRoots:
       - /Applications/DeepSeek Harness.app      # read app.asar without a prompt
     allowInlineCode: true                       # permit `node -e` / `python -c` inside the project

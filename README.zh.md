@@ -132,7 +132,7 @@ dsh --profile web --dump-config | grep -A14 project-guard
   name: dsh-project-guard
   config:
     projectRoots:
-      - /Users/you/Documents/deepseek-harness   # 把这个目录下的兄弟项目也算本项目
+      - ~/Documents/deepseek-harness            # 支持 `~`；这个目录下的兄弟项目也算本项目
     readOnlyRoots:
       - /Applications/DeepSeek Harness.app      # 读 app.asar 不再弹窗
     allowInlineCode: true                       # 项目内允许 node -e / python -c

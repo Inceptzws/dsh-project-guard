@@ -14,7 +14,7 @@
         # includeSessionCwd is true, so this entry only widens the scope to the
         # sibling projects next to it.
         projectRoots:
-          - /Users/inception/Documents/deepseek-harness
+          - ~/Documents/deepseek-harness
         includeSessionCwd: true
         # Roots that may be read but never written. Add the Harness install
         # directory here if reading its sources should not prompt:

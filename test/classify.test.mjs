@@ -216,6 +216,13 @@ test('user configuration can widen and narrow the policy', () => {
   assert.equal(patterns.classify({ tool: 'bash', args: { command: 'echo deploy-now' }, cwd: CWD }).kind, 'ask');
 });
 
+test('project roots accept a leading tilde', () => {
+  const tilde = createPolicy({ projectRoots: ['~/Documents/deepseek-harness'], includeSessionCwd: false });
+  const home = process.env.HOME;
+  assert.equal(tilde.classify({ tool: 'write', args: { file_path: `${home}/Documents/deepseek-harness/x.txt`, content: 'x' }, cwd: '/elsewhere' }).kind, 'allow');
+  assert.equal(tilde.classify({ tool: 'write', args: { file_path: `${home}/Documents/other/x.txt`, content: 'x' }, cwd: '/elsewhere' }).kind, 'ask');
+});
+
 test('remote project roots resolve against symlinks, not just text', () => {
   const decision = decide('write', { file_path: `${PROJECT}/lunasilk/x.txt`, content: 'x' });
   assert.equal(decision.kind, 'allow');
