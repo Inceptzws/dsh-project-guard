@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Project Guard (auto full access)",
-    "description": "Runs project-local work with full access and no prompts; asks once at a time for anything outside the project or touching the system."
+    "title": "Project Guard",
+    "description": "Work inside the workspace is never interrupted; only the extra permission a call asks for is judged — machine-safe actions pass, system changes ask, destructive ones are refused."
   }
 }
