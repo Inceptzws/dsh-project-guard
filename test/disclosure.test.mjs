@@ -17,7 +17,7 @@ import { test } from 'node:test';
 import { normalizeAction } from '../lib/action.js';
 import { normalizeConfig } from '../lib/classify.js';
 import { renderPreview, renderReport } from '../lib/disclosure.js';
-import { createDisclosureEngine } from '../lib/engine.js';
+import { createDisclosureEngine, discloseTrigger } from '../lib/engine.js';
 import { createInterestProfile } from '../lib/interest.js';
 import { analyzeAction, loadRuleSet, readRuleSet } from '../lib/rules.js';
 import { effectiveLoss, selectConsequences } from '../lib/select.js';
@@ -238,6 +238,96 @@ test('only material consequences earn an unsolicited report', () => {
   }
 });
 
+test('the disclosure trigger stays narrow by default', () => {
+  const policy = { config: normalizeConfig({}) };
+  // The default: full access, and only when the user is actually being asked.
+  assert.equal(discloseTrigger(policy, 'danger-full-access', 'ask', {}), true);
+  assert.equal(discloseTrigger(policy, 'workspace-write', 'ask', { sandbox_permissions: 'danger-full-access' }), true);
+  assert.equal(discloseTrigger(policy, 'workspace-write', 'ask', {}), false, 'an ordinary ask is not analysed');
+  assert.equal(discloseTrigger(policy, 'danger-full-access', 'allow', {}), false, 'allowed calls are untouched');
+  assert.equal(discloseTrigger(policy, 'workspace-write', 'allow', {}), false);
+
+  const wider = { config: normalizeConfig({ discloseOn: 'asks' }) };
+  assert.equal(discloseTrigger(wider, 'workspace-write', 'ask', {}), true);
+  const everything = { config: normalizeConfig({ discloseOn: 'all' }) };
+  assert.equal(discloseTrigger(everything, 'workspace-write', 'allow', {}), true);
+});
+
+test('command.matches reads the action text without a model', () => {
+  const action = normalizeAction({ tool: 'bash', args: { command: 'git push --force origin main' }, cwd: CWD });
+  const interest = createInterestProfile({ config: normalizeConfig({}), cwd: CWD });
+  const engine = { ruleSet, collectors: fakeCollectors({}), interest };
+  const hit = analyzeAction(engine, action);
+  assert.ok(hit.consequences.some((entry) => entry.ruleId === 'R-REP-FORCE-PUSH-01'), 'the force push is recognised');
+
+  const tame = normalizeAction({ tool: 'bash', args: { command: 'git push origin main' }, cwd: CWD });
+  const quiet = analyzeAction(engine, tame);
+  assert.ok(!quiet.consequences.some((entry) => entry.ruleId === 'R-REP-FORCE-PUSH-01'));
+});
+
+test('tiers decide how a consequence may be presented', () => {
+  const interest = createInterestProfile({ config: normalizeConfig({}), cwd: CWD });
+  const make = (dimension, confidence) => ({
+    ruleId: 'X', severity: 'high', recoverability: 'low', confidence, nonObviousness: 0.9,
+    interest: interest.item(dimension, 'item'), options: [], disclosure: { life: 'x' }
+  });
+  // Tier 2: a hint, and its confidence may not claim a measurement.
+  const hint = selectConsequences({ consequences: [make('finance_money', 0.95)], interest, budget: 3, threshold: 0.01, checkedScope: [] });
+  assert.equal(hint.selected[0].kind, 'hint');
+  assert.ok(hint.selected[0].confidence <= 0.5, `capped, got ${hint.selected[0].confidence}`);
+  // Tier 3: flagged, never scored or ranked.
+  const flagged = selectConsequences({ consequences: [make('autonomy', 0.9)], interest, budget: 3, threshold: 0.01, checkedScope: [] });
+  assert.equal(flagged.selected.length, 0);
+  assert.equal(flagged.flags.length, 1);
+  assert.equal(flagged.flags[0].kind, 'flag');
+});
+
+test('the interest space is open: user dimensions are honoured', () => {
+  const interest = createInterestProfile({
+    config: normalizeConfig({ interests: { my_health_data: { weight: 0.95, tier: 3, label: 'my health records' } } }),
+    cwd: CWD
+  });
+  assert.equal(interest.tierOf('my_health_data'), 3);
+  assert.equal(interest.isFlagOnly('my_health_data'), true);
+  assert.equal(interest.weightOf('my_health_data'), 0.95);
+  assert.equal(interest.item('my_health_data', 'x').label.en, 'my health records');
+  // A dimension nobody declared is treated as a tier-2 hint, not a measurement.
+  assert.equal(interest.tierOf('invented_dimension'), 2);
+  assert.equal(interest.confidenceCap('invented_dimension'), 0.5);
+});
+
+test('credential, sharing and regulated-data collectors', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pg-cred-'));
+  try {
+    const collectors = createCollectors({ home: dir, cwd: dir, projectRoots: [dir], insideProject: () => true });
+    assert.equal(collectors['credential.sensitive'](join(dir, '.ssh', 'id_rsa')).value, true);
+    assert.equal(collectors['credential.sensitive'](join(dir, '.aws', 'credentials')).value, true);
+    assert.equal(collectors['credential.sensitive']('src/main.js').value, false);
+    assert.equal(collectors['path.shared_resource']('/Users/Shared/team/x').value, true);
+    assert.equal(collectors['path.shared_resource']('/Users/me/work/x').value, false);
+    assert.equal(collectors['data.regulated']('/Users/me/patients/list.csv').value, true);
+    assert.equal(collectors['data.regulated']('/Users/me/notes.txt').value, false);
+    for (const name of ['credential.sensitive', 'path.shared_resource', 'data.regulated']) {
+      assert.equal(typeof collectors.scopes[name], 'string', `${name} declares its scope`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the rule set reaches across the whole interest space', () => {
+  const dimensions = new Set(ruleSet.rules.map((rule) => rule.interest?.dimension));
+  for (const expected of ['data_work', 'availability', 'authority_delegation', 'credentials', 'accounts',
+    'economic', 'finance_money', 'privacy', 'reputation', 'relationships', 'legal', 'compliance',
+    'intellectual_property', 'ethical']) {
+    assert.ok(dimensions.has(expected), `rule set covers ${expected}`);
+  }
+  const interest = createInterestProfile({ config: normalizeConfig({}), cwd: CWD });
+  for (const rule of ruleSet.rules) {
+    assert.ok(interest.tierOf(rule.interest.dimension) !== undefined, `${rule.id} has a resolvable dimension`);
+  }
+});
+
 test('parseDuration understands the schema shorthand', () => {
   assert.equal(parseDuration('7d'), 7 * 86_400_000);
   assert.equal(parseDuration('30m'), 30 * 60_000);
@@ -338,6 +428,96 @@ test('only material consequences earn an unsolicited report', () => {
     assert.equal(engine.report({ analysis: medium, cwd: workspace, session }), undefined);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('the disclosure trigger stays narrow by default', () => {
+  const policy = { config: normalizeConfig({}) };
+  // The default: full access, and only when the user is actually being asked.
+  assert.equal(discloseTrigger(policy, 'danger-full-access', 'ask', {}), true);
+  assert.equal(discloseTrigger(policy, 'workspace-write', 'ask', { sandbox_permissions: 'danger-full-access' }), true);
+  assert.equal(discloseTrigger(policy, 'workspace-write', 'ask', {}), false, 'an ordinary ask is not analysed');
+  assert.equal(discloseTrigger(policy, 'danger-full-access', 'allow', {}), false, 'allowed calls are untouched');
+  assert.equal(discloseTrigger(policy, 'workspace-write', 'allow', {}), false);
+
+  const wider = { config: normalizeConfig({ discloseOn: 'asks' }) };
+  assert.equal(discloseTrigger(wider, 'workspace-write', 'ask', {}), true);
+  const everything = { config: normalizeConfig({ discloseOn: 'all' }) };
+  assert.equal(discloseTrigger(everything, 'workspace-write', 'allow', {}), true);
+});
+
+test('command.matches reads the action text without a model', () => {
+  const action = normalizeAction({ tool: 'bash', args: { command: 'git push --force origin main' }, cwd: CWD });
+  const interest = createInterestProfile({ config: normalizeConfig({}), cwd: CWD });
+  const engine = { ruleSet, collectors: fakeCollectors({}), interest };
+  const hit = analyzeAction(engine, action);
+  assert.ok(hit.consequences.some((entry) => entry.ruleId === 'R-REP-FORCE-PUSH-01'), 'the force push is recognised');
+
+  const tame = normalizeAction({ tool: 'bash', args: { command: 'git push origin main' }, cwd: CWD });
+  const quiet = analyzeAction(engine, tame);
+  assert.ok(!quiet.consequences.some((entry) => entry.ruleId === 'R-REP-FORCE-PUSH-01'));
+});
+
+test('tiers decide how a consequence may be presented', () => {
+  const interest = createInterestProfile({ config: normalizeConfig({}), cwd: CWD });
+  const make = (dimension, confidence) => ({
+    ruleId: 'X', severity: 'high', recoverability: 'low', confidence, nonObviousness: 0.9,
+    interest: interest.item(dimension, 'item'), options: [], disclosure: { life: 'x' }
+  });
+  // Tier 2: a hint, and its confidence may not claim a measurement.
+  const hint = selectConsequences({ consequences: [make('finance_money', 0.95)], interest, budget: 3, threshold: 0.01, checkedScope: [] });
+  assert.equal(hint.selected[0].kind, 'hint');
+  assert.ok(hint.selected[0].confidence <= 0.5, `capped, got ${hint.selected[0].confidence}`);
+  // Tier 3: flagged, never scored or ranked.
+  const flagged = selectConsequences({ consequences: [make('autonomy', 0.9)], interest, budget: 3, threshold: 0.01, checkedScope: [] });
+  assert.equal(flagged.selected.length, 0);
+  assert.equal(flagged.flags.length, 1);
+  assert.equal(flagged.flags[0].kind, 'flag');
+});
+
+test('the interest space is open: user dimensions are honoured', () => {
+  const interest = createInterestProfile({
+    config: normalizeConfig({ interests: { my_health_data: { weight: 0.95, tier: 3, label: 'my health records' } } }),
+    cwd: CWD
+  });
+  assert.equal(interest.tierOf('my_health_data'), 3);
+  assert.equal(interest.isFlagOnly('my_health_data'), true);
+  assert.equal(interest.weightOf('my_health_data'), 0.95);
+  assert.equal(interest.item('my_health_data', 'x').label.en, 'my health records');
+  // A dimension nobody declared is treated as a tier-2 hint, not a measurement.
+  assert.equal(interest.tierOf('invented_dimension'), 2);
+  assert.equal(interest.confidenceCap('invented_dimension'), 0.5);
+});
+
+test('credential, sharing and regulated-data collectors', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pg-cred-'));
+  try {
+    const collectors = createCollectors({ home: dir, cwd: dir, projectRoots: [dir], insideProject: () => true });
+    assert.equal(collectors['credential.sensitive'](join(dir, '.ssh', 'id_rsa')).value, true);
+    assert.equal(collectors['credential.sensitive'](join(dir, '.aws', 'credentials')).value, true);
+    assert.equal(collectors['credential.sensitive']('src/main.js').value, false);
+    assert.equal(collectors['path.shared_resource']('/Users/Shared/team/x').value, true);
+    assert.equal(collectors['path.shared_resource']('/Users/me/work/x').value, false);
+    assert.equal(collectors['data.regulated']('/Users/me/patients/list.csv').value, true);
+    assert.equal(collectors['data.regulated']('/Users/me/notes.txt').value, false);
+    for (const name of ['credential.sensitive', 'path.shared_resource', 'data.regulated']) {
+      assert.equal(typeof collectors.scopes[name], 'string', `${name} declares its scope`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the rule set reaches across the whole interest space', () => {
+  const dimensions = new Set(ruleSet.rules.map((rule) => rule.interest?.dimension));
+  for (const expected of ['data_work', 'availability', 'authority_delegation', 'credentials', 'accounts',
+    'economic', 'finance_money', 'privacy', 'reputation', 'relationships', 'legal', 'compliance',
+    'intellectual_property', 'ethical']) {
+    assert.ok(dimensions.has(expected), `rule set covers ${expected}`);
+  }
+  const interest = createInterestProfile({ config: normalizeConfig({}), cwd: CWD });
+  for (const rule of ruleSet.rules) {
+    assert.ok(interest.tierOf(rule.interest.dimension) !== undefined, `${rule.id} has a resolvable dimension`);
   }
 });
 

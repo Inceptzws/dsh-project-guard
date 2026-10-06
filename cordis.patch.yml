@@ -62,10 +62,22 @@
         # tool result when an action ran without one. Set false for the
         # permission gate alone.
         disclose: true
-        # Most consequences shown for one decision (the paper's budget k), and
-        # the relevance threshold τ below which nothing is disclosed at all.
+        # When the layer may speak. The default is deliberately narrow, because a
+        # disclosure on every call is noise and noise trains you to click through:
+        #   full-access-asks — only in full access (or when the call is asking to
+        #                      escalate to it) AND the call needs confirmation.
+        #   asks             — any call that needs confirmation.
+        #   all              — every action the rule set knows.
+        discloseOn: full-access-asks
+        # Append a post-execution Report to the results of actions that ran
+        # unprompted. Off by default for the same reason.
+        reportExecuted: false
+        # Most consequences shown for one decision (budget k), the relevance
+        # threshold τ below which nothing is disclosed, and the lowest severity
+        # that earns an unsolicited Report.
         attentionBudget: 2
-        relevanceThreshold: 0.15
+        relevanceThreshold: 0.3
+        reportMinSeverity: high
         # Observed-vs-predicted records, relative to the workspace. These are the
         # calibration evidence the paper's evaluation consumes; they hold action
         # types, paths and verdicts, never file contents.

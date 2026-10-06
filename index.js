@@ -31,7 +31,7 @@
  */
 import { createApprovalQueue } from './lib/approval-queue.js';
 import { createPolicy } from './lib/classify.js';
-import { createDisclosureEngine } from './lib/engine.js';
+import { createDisclosureEngine, discloseTrigger } from './lib/engine.js';
 import { impactLine } from './lib/impact.js';
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -164,11 +164,6 @@ export function apply(ctx, config) {
     if (session === undefined || typeof cwd !== 'string' || cwd.length === 0) return next();
 
     const mode = sandboxModeOf(session);
-
-    // Consequence analysis first: it is skipped in microseconds unless the rule
-    // set speaks about this kind of action.
-    const analysis = engine === undefined ? undefined : engine.analyze({ tool: exec.name, args: exec.arguments, cwd, session });
-
     let decision;
     try {
       decision = policy.classify({ tool: exec.name, args: exec.arguments, cwd, mode });
@@ -187,12 +182,19 @@ export function apply(ctx, config) {
       warn(`project-guard: classifier failure for ${exec.name}: ${message}`);
     }
 
+    // Consequence analysis runs only where the user is actually being asked for
+    // something extra. Analysing ordinary traffic is noise, and noise is itself a
+    // safety problem: it trains the user to click through.
+    const disclosePolicy = policy.config.discloseOn;
+    const wantsAnalysis = engine !== undefined && discloseTrigger(policy, mode, decision.kind, exec.arguments);
+    const analysis = wantsAnalysis ? engine.analyze({ tool: exec.name, args: exec.arguments, cwd, session }) : undefined;
+    /** The report path only exists for actions that ran without a confirmation. */
+    const wantsReport = engine !== undefined && (disclosePolicy === 'all' || policy.config.reportExecuted);
+
     // Work that stays inside the workspace is already confined by the sandbox:
-    // the permission layer does not take part in it at all. The disclosure layer
-    // does, because an action that runs by default is exactly the case where a
-    // loss would otherwise be silent.
+    // the permission layer does not take part in it at all.
     if (decision.engage === false) {
-      keepForReport(exec, session, cwd, analysis);
+      if (wantsReport) keepForReport(exec, session, cwd, analysis);
       return next();
     }
 
@@ -202,7 +204,7 @@ export function apply(ctx, config) {
     log(`project-guard: ${decision.kind} ${exec.name} (${decision.code})${decision.detail === undefined ? '' : ` — ${decision.detail}`}`);
 
     if (decision.kind === 'allow') {
-      keepForReport(exec, session, cwd, analysis);
+      if (wantsReport) keepForReport(exec, session, cwd, analysis);
       return next();
     }
     if (decision.kind === 'deny') {

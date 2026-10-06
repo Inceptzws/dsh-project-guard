@@ -50,6 +50,14 @@ Chinese output. `${target}` is substituted with the action's target.
 rule; it is reported in the disclosure's coverage line instead of being guessed.
 That is deliberate: an unknown state must never be rendered as a known one.
 
+Built-in predicates that read the action itself (no state collection):
+
+| Predicate | Meaning |
+| --- | --- |
+| `always()` | nothing to check; use only when the consequence needs no state |
+| `process.core_system` | the target is a core system process |
+| `command.matches(pattern: '...')` | the command text matches a regular expression |
+
 Available collectors and their declared scope `K`:
 
 | Collector | Scope it declares |
@@ -62,8 +70,32 @@ Available collectors and their declared scope `K`:
 | `process.running(target)` | processes of the same user |
 | `service.dependents(target)` | processes of the same user |
 | `scope.outside_project(target)` | the configured project roots |
+| `path.system_root(target)` | the target path only |
+| `path.is_build_artifact(target)` | the target path only |
+| `credential.sensitive(target)` | the target path only |
+| `path.shared_resource(target)` | the target path only |
+| `data.regulated(target)` | the target path only (path-based guess, low confidence) |
 
 Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`.
+
+## Tiers
+
+A rule's interest dimension carries a tier, and the tier decides how the
+consequence may be presented — this is enforced in `lib/select.js`, not left to
+the rule author:
+
+| Tier | Treatment |
+| --- | --- |
+| 1 | computed from collected state; scored normally |
+| 1-2 | computed, but what it means needs context; confidence capped at 0.6 |
+| 2 | a hint: rendered as "inference (unverified)", confidence capped at 0.5 |
+| 2-3 | flagged, with an explicit value-judgment warning; confidence capped at 0.4 |
+| 3 | flagged only — never scored, ranked or adjudicated |
+
+Tier 3 exists because dressing a value judgment up as a computed result is worse
+than saying nothing. `lib/interest.js` holds the dimension table; a dimension the
+user declares in `interests:` is registered with its own tier, and an unknown
+dimension defaults to tier 2.
 
 ## Adding a rule
 

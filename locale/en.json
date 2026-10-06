@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Project Guard",
-    "description": "Work inside the workspace is never interrupted; only the extra permission a call asks for is judged — machine-safe actions pass, system changes ask, destructive ones are refused."
+    "description": "Consequence analysis for DeepSeek Harness: when a call in full access asks for extra permission, it says what that costs you — you and the device, the agent and you, and your wider interests beyond the device. State-based, with confidence and checked scope."
   }
 }

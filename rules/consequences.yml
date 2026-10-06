@@ -438,3 +438,296 @@ rules:
       life_zh: "这会花掉你在外部服务上的余额或配额，而被委派的智能体之后还能继续花。"
       technical: "spend-bearing api call detected; quota state not collected"
       technical_zh: "检测到会产生费用的 API 调用；未采集配额状态"
+
+  # ─────────────── 凭据 / 账号 / 权限（Tier 1）───────────────
+  - id: R-CRED-EGRESS-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "command.matches(pattern: '(^|[ /])([.]ssh|[.]aws|[.]gnupg|[.]kube|[.]config/(gcloud|gh)|[.]docker|[.]npmrc|[.]netrc|[.]pypirc|[.]env([.]|$)|id_rsa|[.]pem|[.]key|[.]p12|[.]pfx|credentials|secrets?|tokens?)')"
+    interest: {dimension: credentials, item: "your keys, tokens and password stores"}
+    consequence:
+      type: credential_exposure
+      severity: high
+      recoverability: low
+      confidence: 0.8
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "a credential leaves your machine; anyone who receives it can act as you until you rotate it"}
+      - {id: reject, loss: "this transfer does not happen"}
+      - {id: rewrite, loss: "nothing; send a scoped token instead of the key itself"}
+    disclosure:
+      life: "This looks like it sends a key, token or password store off this machine. Once it is out you cannot take it back, and the other side can act as you until you rotate it."
+      life_zh: "这看起来会把密钥、令牌或密码库发到这台机器之外。发出去就收不回，对方在轮换之前都能以你的身份行动。"
+      technical: "egress command references a credential path or secret store"
+      technical_zh: "外发命令引用了凭据路径或密码库"
+
+  - id: R-CRED-DELETE-01
+    action: {type: fs.delete, target_kind: path}
+    state_predicates:
+      - "credential.sensitive(target) == true"
+    interest: {dimension: accounts, item: "access to the accounts ${target} unlocks"}
+    consequence:
+      type: access_loss
+      severity: high
+      recoverability: medium
+      confidence: 0.85
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "the key itself; every account or server that trusts it stops accepting you"}
+      - {id: reject, loss: "this step of the task does not happen"}
+      - {id: backup_then_execute, loss: "a few seconds; the key stays recoverable"}
+    disclosure:
+      life: "This deletes a key or password store. Everything that trusts it stops recognising you, and re-issuing it may need access you no longer have."
+      life_zh: "这是删除密钥或密码库。所有信任它的地方都不再认你，而重新签发可能又需要你已经失去的访问权。"
+      technical: "target matches the credential-store patterns"
+      technical_zh: "目标命中凭据库模式"
+
+  - id: R-CRED-WRITE-01
+    action: {type: fs.overwrite, target_kind: path}
+    state_predicates:
+      - "credential.sensitive(target) == true"
+    interest: {dimension: credentials, item: "the contents of ${target}"}
+    consequence:
+      type: credential_overwrite
+      severity: high
+      recoverability: medium
+      confidence: 0.8
+    non_obviousness: 0.85
+    options:
+      - {id: execute, loss: "the existing key material in ${target}"}
+      - {id: reject, loss: "the write does not happen"}
+      - {id: backup_then_execute, loss: "a few seconds; the previous material stays recoverable"}
+    disclosure:
+      life: "This writes over a key or password store. If the old contents are gone you may be locked out, and anything encrypted to them is gone too."
+      life_zh: "这会覆盖密钥或密码库。旧内容一旦没了，你可能被锁在外面，用它加密的东西也一起没了。"
+      technical: "target matches the credential-store patterns"
+      technical_zh: "目标命中凭据库模式"
+
+  - id: R-AUTH-WEAKEN-01
+    action: {type: config.change, target_kind: command}
+    state_predicates:
+      - "command.matches(pattern: '(csrutil|spctl[ ]+--master-disable|authorizationdb|/etc/sudoers|kextload|kextutil|kmutil|nvram[ ]+[^ ]*boot-args|firmwarepasswd)')"
+    interest: {dimension: authority_delegation, item: "the protection around this machine"}
+    consequence:
+      type: security_posture_change
+      severity: high
+      recoverability: medium
+      confidence: 0.9
+    non_obviousness: 0.6
+    options:
+      - {id: execute, loss: "the protection itself; afterwards any program can do what you just allowed"}
+      - {id: reject, loss: "the setting stays as it is"}
+    disclosure:
+      life: "This weakens the protection on this machine. Afterwards other software — including anything running inside this session — can do things the protection was blocking."
+      life_zh: "这会削弱这台机器的保护。之后其他软件（包括这次会话里跑的任何东西）就能做原本被挡住的事。"
+      technical: "system integrity, code signing or authorisation database change detected"
+      technical_zh: "检测到系统完整性、签名或授权数据库的改动"
+
+  # ─────────────── 经济 / 金融（Tier 2：给带不确定性的提示）───────────────
+  - id: R-FIN-MONEY-01
+    action: {type: api.spend, target_kind: quota}
+    state_predicates:
+      - "command.matches(pattern: '(stripe|paypal|coinbase|kraken|binance|alpaca|ibkr|interactive[ ]+brokers|plaid|wise|revolut|payout|transfer|invoice|--amount|charge[ ])')"
+    interest: {dimension: finance_money, item: "money actually moved or committed"}
+    consequence:
+      type: financial_transaction
+      severity: high
+      recoverability: low
+      confidence: 0.4
+    non_obviousness: 0.8
+    options:
+      - {id: execute, loss: "money leaves or is committed; reversing it depends on the other side's policy"}
+      - {id: reject, loss: "the payment does not happen"}
+    disclosure:
+      life: "This looks like it moves or commits real money. Reversing a payment is not in your hands, and the amount is not something this tool can verify."
+      life_zh: "这看起来会真的挪动或承诺金钱。能否撤回不由你决定，而且金额不是这个工具能核实的。"
+      technical: "payment or transfer program detected; balance state not collected"
+      technical_zh: "检测到支付或转账程序；未采集余额状态"
+
+  - id: R-FIN-MARKET-01
+    action: {type: api.spend, target_kind: quota}
+    state_predicates:
+      - "command.matches(pattern: '(--live|place[_-]?order|submit[_-]?order|market[ ]+order|limit[ ]+order|leverage|margin)')"
+    interest: {dimension: finance_market, item: "positions and obligations in a market"}
+    consequence:
+      type: market_order
+      severity: high
+      recoverability: low
+      confidence: 0.35
+    non_obviousness: 0.8
+    options:
+      - {id: execute, loss: "a live order; losses can exceed what the command line suggests"}
+      - {id: reject, loss: "the order is not placed"}
+      - {id: dry_run, loss: "nothing; place it against a paper account first"}
+    disclosure:
+      life: "This looks like a live order in a market. Losses are not bounded by this command, and this tool cannot see your positions."
+      life_zh: "这看起来是在市场上真下单。亏损不受这条命令的限制，而本工具看不到你的持仓。"
+      technical: "live-trading flag detected; position state not collected"
+      technical_zh: "检测到实盘交易标志；未采集持仓状态"
+
+  - id: R-ECON-DELEG-01
+    action: {type: agent.spawn, target_kind: agent}
+    state_predicates:
+      - "always()"
+    interest: {dimension: economic, item: "quota spent by delegated agents"}
+    consequence:
+      type: delegated_spend
+      severity: medium
+      recoverability: low
+      confidence: 0.4
+    non_obviousness: 0.8
+    options:
+      - {id: execute, loss: "unknown quota, spent by agents you do not watch step by step"}
+      - {id: reject, loss: "the work is not delegated"}
+      - {id: bounded, loss: "nothing; cap the number of steps or the budget first"}
+    disclosure:
+      life: "Delegated work spends your quota on your behalf, and each agent it starts can spend more. The total is not something this tool can see."
+      life_zh: "被委派的工作会替你消耗配额，而它再启动的每个智能体还能继续消耗。总量不是本工具能看到的东西。"
+      technical: "delegation detected; quota balance not collected"
+      technical_zh: "检测到委派；未采集配额余额"
+
+  # ─────────────── 声誉 / 关系（Tier 2）───────────────
+  - id: R-REP-PUBLISH-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "command.matches(pattern: '(npm[ ]+publish|yarn[ ]+publish|twine[ ]+upload|cargo[ ]+publish|gem[ ]+push|gh[ ]+release[ ]+create|docker[ ]+push|gh[ ]+repo[ ]+create|gh[ ]+gist[ ]+create|vercel|netlify[ ]+deploy)')"
+    interest: {dimension: reputation, item: "what you have published under your name"}
+    consequence:
+      type: public_release
+      severity: medium
+      recoverability: low
+      confidence: 0.5
+    non_obviousness: 0.7
+    options:
+      - {id: execute, loss: "it is public; mirrors, caches and forks keep copies after you delete it"}
+      - {id: reject, loss: "nothing is published"}
+    disclosure:
+      life: "This publishes something under your name. Deleting it later does not recall it: mirrors, caches and other people's copies stay."
+      life_zh: "这会以你的名义公开发布东西。之后删掉也收不回来：镜像、缓存和别人的副本都还在。"
+      technical: "public release or registry publish command detected"
+      technical_zh: "检测到公开发布或注册表推送命令"
+
+  - id: R-REP-FORCE-PUSH-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "command.matches(pattern: 'git[ ]+push[^|;&]*(--force(-with-lease)?|-f([ ]|$))')"
+    interest: {dimension: data_work, item: "the shared history of the remote repository"}
+    consequence:
+      type: history_rewrite
+      severity: high
+      recoverability: low
+      confidence: 0.85
+    non_obviousness: 0.85
+    options:
+      - {id: execute, loss: "commits that exist only on the remote, including other people's work"}
+      - {id: reject, loss: "the push does not happen"}
+      - {id: alternative, loss: "nothing; push a new commit, or use --force-with-lease on your own branch"}
+    disclosure:
+      life: "This rewrites history on the remote. Commits that only exist there disappear, and if anyone else works on that branch their commits can go with them."
+      life_zh: "这会重写远端历史。只存在于远端的提交会消失；如果别人也在用这个分支，他们的提交可能一起没。"
+      technical: "force push to a remote branch detected"
+      technical_zh: "检测到对远端分支的强制推送"
+
+  - id: R-REL-MESSAGE-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "command.matches(pattern: '((^|[ /])(mail|mailx|sendmail|mutt)|osascript[^|]*Messages|slack|discord|telegram|twilio|sendgrid|mailgun|gh[ ]+(issue|pr|release)[ ]+comment)')"
+    interest: {dimension: relationships, item: "the people who receive a message in your name"}
+    consequence:
+      type: message_sent
+      severity: medium
+      recoverability: low
+      confidence: 0.5
+    non_obviousness: 0.7
+    options:
+      - {id: execute, loss: "the message is out; you cannot recall it"}
+      - {id: reject, loss: "nothing is sent"}
+      - {id: draft, loss: "nothing; write it to a file and send it yourself"}
+    disclosure:
+      life: "This sends a message in your name to other people. You cannot take it back, and that person will read it as coming from you."
+      life_zh: "这会以你的名义给别人发消息。发出去收不回，对方会认为那是你说的。"
+      technical: "messaging or mail program detected"
+      technical_zh: "检测到消息或邮件程序"
+
+  # ─────────────── 合规 / 知识产权 / 法律（Tier 2）───────────────
+  - id: R-COMPLIANCE-DATA-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "command.matches(pattern: '(patient|medical|health|hipaa|clinical|student|employee|payroll|salary|ssn|passport|gdpr|customer|client|invoice|ledger)')"
+    interest: {dimension: compliance, item: "data you may be obliged to protect"}
+    consequence:
+      type: regulated_data_egress
+      severity: high
+      recoverability: low
+      confidence: 0.5
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "regulated data leaves your control; notification duties can follow"}
+      - {id: reject, loss: "the transfer does not happen"}
+      - {id: rewrite, loss: "nothing; send anonymised or aggregated data instead"}
+    disclosure:
+      life: "This looks like it sends data that may be protected by law or by a contract you signed. Once it is out, duties to report the exposure can follow."
+      life_zh: "这看起来会发出可能受法律或你签过的合同保护的数据。一旦外发，随之可能产生报告义务。"
+      technical: "egress references a path or identifier suggesting regulated data; classification not verified"
+      technical_zh: "外发内容引用疑似受监管数据的路径或标识；分类未经核实"
+
+  - id: R-IP-PUBLISH-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "command.matches(pattern: '(curl[^|;&]*(-T|--upload-file)|scp[ ]|rsync[^|;&]*@|twine[ ]+upload|npm[ ]+publish|git[ ]+push[^|;&]*(gitlab|bitbucket))')"
+    interest: {dimension: intellectual_property, item: "source and data you may not be free to publish"}
+    consequence:
+      type: source_disclosure
+      severity: medium
+      recoverability: low
+      confidence: 0.45
+    non_obviousness: 0.85
+    options:
+      - {id: execute, loss: "the code or data leaves; placing it elsewhere can end its protection"}
+      - {id: reject, loss: "the upload does not happen"}
+    disclosure:
+      life: "This uploads code or data somewhere else. If it is not yours to publish, it may stop being protectable, or breach an agreement you are under."
+      life_zh: "这把代码或数据传到别处。如果不是你有权发布的，可能就此失去保护，或违反你身上的协议。"
+      technical: "upload to a third-party host detected"
+      technical_zh: "检测到向第三方主机的上传"
+
+  - id: R-LEGAL-TOS-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "command.matches(pattern: '(--no-check-certificate|curl[^|;&]*[ ]-k[ ]|--insecure|user-agent[^|;&]*bot|rate[_-]?limit[^|;&]*0|xattr[^|;&]*-d[^|;&]*com[.]apple[.]quarantine)')"
+    interest: {dimension: legal, item: "your standing under the terms you accepted"}
+    consequence:
+      type: terms_bypass
+      severity: medium
+      recoverability: medium
+      confidence: 0.4
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "you may breach terms of service or a licence"}
+      - {id: reject, loss: "the step does not run"}
+    disclosure:
+      life: "This skips a normal safeguard (certificate check, quarantine, rate limit). It may breach terms of service or a licence, which is a judgement this tool will not make for you."
+      life_zh: "这绕开了一道正常防护（证书校验、隔离标记、频率限制）。可能违反服务条款或授权，而这个判断本工具不替你做。"
+      technical: "safeguard-bypass flag detected in the command"
+      technical_zh: "命令中出现绕开防护的标志"
+
+  # ─────────────── 价值判断（Tier 2-3：只标记，不预测、不裁决）───────────────
+  - id: R-ETHICS-SHARED-01
+    action: {type: fs.delete, target_kind: path}
+    state_predicates:
+      - "path.shared_resource(target) == true"
+    interest: {dimension: ethical, item: "other people's files in ${target}"}
+    consequence:
+      type: shared_resource_change
+      severity: medium
+      recoverability: medium
+      confidence: 0.3
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "the files of people who never agreed to this"}
+      - {id: reject, loss: "the deletion does not happen"}
+    disclosure:
+      life: "This touches a location shared with other people. Whether that is acceptable is a judgement this tool flags but does not make for you."
+      life_zh: "这动到了与他人共享的位置。这样做是否可接受属于价值判断，本工具只提示、不替你裁决。"
+      technical: "target resolves to a shared location"
+      technical_zh: "目标解析到共享位置"

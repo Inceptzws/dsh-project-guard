@@ -20,6 +20,53 @@ code, and no build step. `index.js` plus five small modules is the whole plugin.
 
 ---
 
+## The highlight: not "may it act", but "what does it cost you"
+
+Existing safety machinery answers three other questions: **may it act**
+(authorization), **where may it act** (sandboxing), **how risky is it** (risk
+scoring). None of them tells you what a command means *for you*. That is the
+layer this plugin adds — **consequence analysis** — and it puts three
+relationships into the same confirmation:
+
+| Relationship | The question it answers | Example |
+|---|---|---|
+| **You ↔ the device** | Will this stop the machine or other programs from working? | Wi-Fi off → the model service carrying this conversation goes with it; `killall` → a program someone is using dies; a full disk → nothing can write |
+| **Agent ↔ you** | What is it committing you to in your name? | Delegating to a sub-agent → later steps stop being shown to you and it spends your quota; `git push --force` → other people's commits on the remote disappear; a global install → shared dependencies move under other projects |
+| **You ↔ your wider interests** | Does this reach past the device? | Keys or tokens leaving the machine, real money being spent, regulated data crossing a border, publishing or messaging under your name, bypassing certificate and terms safeguards |
+
+**The analysis is measured, not guessed.** It collects state first (uncommitted
+changes, recent backups, whether the target is a key store or a shared location)
+and then applies rules: the same `rm` is "irrecoverable loss of work" when the
+target is dirty and a different rule when it is clean and unbacked. A predicate
+that cannot be decided is never rendered as "fine" — it lands in the
+"not checked / undecidable" line.
+
+**The interest space is open.** 21 built-in dimensions in seven groups — work
+and data, machine availability, shared environment, authority and credentials,
+accounts, balances and money, market positions, privacy and identity,
+reputation, relationships, legal, compliance, intellectual property,
+professional duties, ethics — and you can **declare your own**:
+
+```yaml
+interests:
+  my_health_data:
+    weight: 0.95
+    tier: 1
+    label: my health records
+```
+
+Because dimensions differ in how computable they are, each is treated by tier:
+**Tier 1** is computed from collected state; **Tier 2** is emitted only as a
+hint with explicit uncertainty (marked "inference (unverified)", with its
+confidence capped); **Tier 3** is flagged only — never predicted, never
+adjudicated. That is deliberate: dressing a value judgment up as a computed
+result is worse than saying nothing.
+
+**And it stays quiet.** By default the analysis runs only in **full access**, and
+only for a call that is **asking you for more permission**. Ordinary work inside
+the workspace is not analysed at all. Noise is itself a safety problem: it trains
+you to click through.
+
 ## What it guarantees
 
 | Requirement | How the plugin delivers it |
@@ -147,40 +194,43 @@ per program (`sudo`, `launchctl`, `defaults`, `kill`, `diskutil`, `pip`,
 - `killall WindowServer|loginwindow|launchd|Finder|Dock|mDNSResponder|configd`,
   `kill -9 1`, `pkill -f "DeepSeek Harness"`, fork bombs
 
-## Consequence disclosure layer
-
-On top of the permission decision there is a **consequence disclosure** layer. It
-answers a different question: not whether an action may run, but **what it costs
-you**.
+## The consequence disclosure layer, mechanically
 
 - **The rule set is declarative**, entirely in
-  [`rules/consequences.yml`](rules/consequences.yml) — 19 rules across the file,
-  process, network, service and economic/delegation families. Schema:
-  [rules/README.md](rules/README.md).
-- **Preview (before the decision)**: the confirmation prompt carries the action,
-  the collected state, the consequence in user-level words, the affected interest
-  and its weight, severity and recoverability, confidence and the **checked
-  scope**, and the losses of each option (including the cost of rejecting, and
-  backup-then-execute).
-- **Report (after execution)**: when an action that a rule speaks about runs
-  without a confirmation, a report is appended to the tool result with
-  **predicted vs observed** (match, false alarm, unpredicted change) and a
-  recovery hint — so a silent loss stops being silent.
-- **State is collected, never guessed**: the same `rm` is "irreversible data
-  loss" when the target has uncommitted changes and a different rule when it is
-  clean and unbacked up. A predicate that cannot be decided never fires a rule;
-  it lands in the "not checked / undecidable" line instead of being rendered as
-  good news.
+  [`rules/consequences.yml`](rules/consequences.yml) — **34 rules** across files,
+  processes, network, services, credentials and accounts, money, reputation and
+  relationships, legal and compliance, intellectual property, and value
+  judgments. Schema and "how to add a rule": [rules/README.md](rules/README.md).
+- **The trigger is deliberately narrow**: by default (`discloseOn:
+  full-access-asks`) the analysis runs only in **full access**, and only for a
+  call that is **asking you for extra permission**. Ordinary work inside the
+  workspace is never analysed. Widen it with `discloseOn: asks` (any call that
+  needs your confirmation) or `all` (every action the rule set knows).
+- **Preview (before the decision)**: the action, the collected state, the
+  consequence in user-level words, the affected interest and its weight, severity
+  and recoverability, confidence and the **checked scope**, and the losses of each
+  option — including the cost of rejecting and backup-then-execute.
+- **Report (after execution, off by default)**: with `reportExecuted` enabled, an
+  action that ran unprompted appends a post-execution disclosure to its result
+  with **predicted vs observed** (match / false alarm / unpredicted change) and a
+  recovery hint. It is off by default because commenting on every action is
+  itself noise.
 - **Relevance selection**: every consequence is scored `r(e) = w · l · κ · ν`
   (loss net of recoverability); only the top-k above the threshold are shown, and
-  anything below it is not shown at all — approval fatigue is itself a risk.
-- **Calibration records**: every report appends one JSONL line to
+  anything below it is silent. Value judgments (tier 3) are flagged and never
+  scored.
+- **Calibration records**: each report appends one JSONL line to
   `.dsh-project-guard/reports.jsonl` with action types, paths, predictions,
-  observations and coverage — never file contents.
+  observations, coverage and the interest weights in force — never file contents.
+  This is exactly the evidence a predicted-vs-observed calibration needs.
 
-Configuration: `disclose` (off leaves the permission gate alone),
-`attentionBudget` (budget k), `relevanceThreshold` (τ), `reportDir`, `interests`
-(declare your own weights, e.g. `privacy: 1.0`) and `rulesFile`.
+Configuration: `disclose` (master switch), `discloseOn`
+(`full-access-asks` / `asks` / `all`), `attentionBudget` (budget k, default 2),
+`relevanceThreshold` (τ, default 0.3), `reportMinSeverity` (default high),
+`reportExecuted`, `reportDir`, `interests` (declare or add your own dimensions
+and weights) and `rulesFile`.
+
+## Install
 
 ## Install
 
