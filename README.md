@@ -5,47 +5,84 @@
 
 [中文说明](README.zh.md) | **English**
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that
-**keeps the sandbox mode you chose** and judges only the *extra permission* a call
-asks for. Work inside the workspace never involves the plugin at all — the sandbox
-already confines it. When a call wants more than that mode allows, the test is
-whether it can damage the computer or stop another program from working: reads,
-network traffic, uploads, temp files and package caches pass; system state changes
-and writes outside the project ask you once, with a consequence analysis; the
-actions that would damage the machine or cut the session are refused outright. At
-most one confirmation is outstanding at a time.
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that **states what an action will cost you, before and after the agent touches your machine**.
 
-It is a Host plugin: zero dependencies, no imports of any Harness package, no UI
-code, and no build step. `index.js`, the modules under `lib/`, and the declarative rule set `rules/consequences.yml` are the whole plugin.
+It is the prototype adapter described in §6.2 of the preprint above: the same three interfaces `analyze` / `preview` / `report` (§4.6), the six-family consequence rule system (§4), and the Preview and Report modes of the informed-execution framework (§5.1). Every judgement is deterministic table lookup — no model call anywhere. Zero dependencies, no imports from Harness packages, no build step.
 
 ---
 
-## The highlight: not "may it act", but "what does it cost you"
+## 1. What decisions are missing is not permission, it is consequence
 
-Existing safety machinery answers three other questions: **may it act**
-(authorization), **where may it act** (sandboxing), **how risky is it** (risk
-scoring). None of them tells you what a command means *for you*. That is the
-layer this plugin adds — **consequence analysis** — and it puts three
-relationships into the same confirmation:
+§1.4 of the paper observes that existing machinery answers three other questions:
 
-| Relationship | The question it answers | Example |
-|---|---|---|
-| **You ↔ the device** | Will this stop the machine or other programs from working? | Wi-Fi off → the model service carrying this conversation goes with it; `killall` → a program someone is using dies; a full disk → nothing can write |
-| **Agent ↔ you** | What is it committing you to in your name? | Delegating to a sub-agent → later steps stop being shown to you and it spends your quota; `git push --force` → other people's commits on the remote disappear; a global install → shared dependencies move under other projects |
-| **You ↔ your wider interests** | Does this reach past the device? | Keys or tokens leaving the machine, real money being spent, regulated data crossing a border, publishing or messaging under your name, bypassing certificate and terms safeguards |
+| Mechanism | The question it answers |
+|---|---|
+| Authorization | *may* this action run |
+| Sandboxing | *where* may it run |
+| Risk assessment | *how risky* is it |
 
-**The analysis is measured, not guessed.** It collects state first (uncommitted
-changes, recent backups, whether the target is a key store or a shared location)
-and then applies rules: the same `rm` is "irrecoverable loss of work" when the
-target is dirty and a different rule when it is clean and unbacked. A predicate
-that cannot be decided is never rendered as "fine" — it lands in the
-"not checked / undecidable" line.
+None of them answers **what it means for you**. And §3.4 makes that worse: task success is always visible while loss frequently is not (a *silent loss*), so among successful runs the true loss rate is systematically underestimated (Proposition 1):
 
-**The interest space is open.** 21 built-in dimensions in seven groups — work
-and data, machine availability, shared environment, authority and credentials,
-accounts, balances and money, market positions, privacy and identity,
-reputation, relationships, legal, compliance, intellectual property,
-professional duties, ethics — and you can **declare your own**:
+$$\mathrm{SLR} = (1-\delta)\cdot P(l^*=1 \mid s=1)$$
+
+This plugin is the prototype that adds that missing layer: **disclose the consequences, so the decision happens with information**.
+
+---
+
+## 2. How it helps your decision
+
+**1. A Preview before the decision (§5.1, §5.3).** When a call is asking you for **extra permission**, the confirmation carries more than allow/deny: the action, the **collected state**, the consequence in user-level words, the affected interest, severity and **recoverability**, **confidence and the checked scope**, and **the losses of each option**. The goal is to bring a pressured decision — time limit, split attention, a queue of prompts — as close as possible to the *reflective* decision $D_R^*$.
+
+**2. A Report afterwards (off by default, one switch).** An action that ran unprompted and matched a rule gets a post-execution disclosure appended to its result: **predicted vs observed** (match / false alarm / unpredicted change) plus a recovery hint. A silent loss becomes something you can notice, mitigate and recover from.
+
+**3. Options, not just a warning (§3.5).** Rejecting is not free — it costs the task goal. So the Preview lists the losses of *execute*, *reject*, *backup-then-execute* and *rewrite*. Warning about execution alone degenerates into refusing everything.
+
+**4. Only what is decision-relevant (§3.6, §4.4).** Every consequence is scored
+
+$$r(e) = w_j \cdot l_j(e) \cdot \kappa_e \cdot \nu_e,\qquad l_j = (1-\rho_j)L_j + r_j$$
+
+and only the top-k above the threshold $\tau$ are shown. Below it, the plugin **says nothing at all**. That comes straight from the motivation in §2: the more warnings there are, the more people click through them (Egelman et al.; Akhawe & Felt; Johnson & Goldstein; Turan on reviewer capacity and fatigue). **Silence is a design decision, not an omission.**
+
+**5. The same action costs different amounts in different states (§3.3).** `delete(project.db)`: with a recent backup $l \approx 0$; without one, $l$ is large. Judgement is therefore $C, S, U \to \Delta U$, not $C \to$ risk. That is the core of this plugin.
+
+**6. It would rather say "I do not know".** A predicate that cannot be decided is never treated as "fine" — it lands in the **not checked / undecidable** line. Confidence is capped per interest tier, and value judgments are flagged only: never predicted, never adjudicated.
+
+---
+
+## 3. Framework → code
+
+| Paper | Implementation |
+|---|---|
+| §4.6 `analyze(action, context) → consequences` | `lib/engine.js` → `lib/rules.js` |
+| §4.6 `preview(action, options, context) → disclosure` | `lib/engine.js` + `lib/disclosure.js` |
+| §4.6 `report(action, pre_state, post_state) → report` | `lib/report.js` (predicted vs observed, JSONL calibration records) |
+| §4.2 family 1: action rules | `lib/action.js` (tool call → typed action: `fs.delete`, `network.egress`, `process.kill`, `api.spend`, …) |
+| family 2: state rules (declared scope $K$) | `lib/state.js` (uncommitted changes, recent backups, credential stores, shared locations, regulated data, build artifacts, …) |
+| family 3: interest rules | `lib/interest.js` (21 built-in dimensions plus user-declared ones, each with a tier) |
+| family 4: consequence rules | [`rules/consequences.yml`](rules/consequences.yml) (**34 declarative rules**) + `lib/rules.js` |
+| family 5: selection rules | `lib/select.js` (budget $k$, threshold $\tau$, tier caps and flags) |
+| family 6: disclosure rules | `lib/disclosure.js` (life level plus technical layer, bilingual) |
+| §5.1 Preview / Report modes | `index.js`: the Preview rides the `tools/pre-execute` confirmation; the Report is appended by `tools/post-execute` |
+| §5.3 predicted-vs-observed records | `lib/report.js` → `.dsh-project-guard/reports.jsonl` (calibration evidence, never file contents) |
+
+The rule schema, the predicate table, the tier table and "how to add a rule" are in [`rules/README.md`](rules/README.md).
+
+---
+
+## 4. Interest dimensions and tiers (§3.2)
+
+The paper is explicit that interests are **far wider than on-device data**: accounts, credentials and their scopes, balances and quotas, third-party services, delegation relations, reputation, legal duties. This plugin ships **21 dimensions in seven groups** and **accepts dimensions you declare yourself**:
+
+| Group | Dimensions |
+|---|---|
+| Work and device | `data_work`, `availability` (the machine and other programs keep working), `environment`, `task_goal`, `schedule` |
+| Authority and identity | `authority_delegation`, `credentials`, `accounts`, `privacy` |
+| Economy and finance | `economic`, `finance_money`, `finance_market`, `business_ops` |
+| People and standing | `reputation`, `relationships` |
+| Rules and duties | `legal`, `compliance`, `intellectual_property`, `employment` |
+| Values | `ethical`, `autonomy` |
+
+Declaring your own — it does not have to be a dimension we know:
 
 ```yaml
 interests:
@@ -55,357 +92,145 @@ interests:
     label: my health records
 ```
 
-Because dimensions differ in how computable they are, each is treated by tier:
-**Tier 1** is computed from collected state; **Tier 2** is emitted only as a
-hint with explicit uncertainty (marked "inference (unverified)", with its
-confidence capped); **Tier 3** is flagged only — never predicted, never
-adjudicated. That is deliberate: dressing a value judgment up as a computed
-result is worse than saying nothing.
+Because dimensions differ in how computable they are, each is treated by tier — **enforced in `lib/select.js`, not left to the optimism of a rule author**:
 
-**And it stays quiet.** By default the analysis runs only in **full access**, and
-only for a call that is **asking you for more permission**. Ordinary work inside
-the workspace is not analysed at all. Noise is itself a safety problem: it trains
-you to click through.
-
-## What it guarantees
-
-| Requirement | How the plugin delivers it |
+| Tier | Treatment |
 |---|---|
-| Work inside the workspace is never interrupted | The sandbox already confines it, so the guard takes no part: no classification, no record, no prompt |
-| The guard only speaks about *extra* permission | It engages when a call asks to escalate past the session's sandbox mode, or while the session runs at full permission |
-| What cannot disturb the machine is granted silently | Reads anywhere, network and uploads, temp files, package caches, project writes — including the escalation those need |
-| What could disturb the machine or another program needs your confirmation | System changes (services, preferences, network configuration, power, disks, processes, global installs) and writes outside the project |
-| Other programs must keep working | Commands that starve the machine or take a shared resource ask first: `dd if=/dev/zero`, `yes >`, unbounded loops, `stress`, `python -m http.server` |
-| Only one confirmation may be outstanding | A single-slot queue in front of the approval seam; system-related requests take the slot before ordinary ones |
-| Every confirmation explains the downside | Each prompt carries a deterministic impact analysis: a level plus the concrete adverse outcome of saying yes |
+| **1** | computed from collected state, scored normally |
+| **1-2** | computable, but its meaning needs context; confidence capped at 0.6 |
+| **2** | a **hint** only: marked "inference (unverified)", confidence capped at 0.5 |
+| **2-3** | flagged with an explicit value-judgment warning; confidence capped at 0.4 |
+| **3** | **flagged only**: never scored, ranked or adjudicated |
 
-### When the guard is involved — and when it is not
+As `rules/README.md` puts it: **dressing a value judgment up as a computed result is worse than saying nothing.**
 
-The three permission modes in the picker are the starting point:
+---
 
-| Session mode | What the guard does |
+## 5. The trigger: staying quiet is part of the design
+
+By default the analysis runs only in **full access**, and only for a call that is **asking you for extra permission**:
+
+| Situation | Analysed? |
 |---|---|
-| **Workspace-write** (default) | Nothing at all, until a call asks for an escalation beyond it. Those requests are the "extra permission" the guard judges: in-project and machine-safe work is granted silently, a system change or an outside write asks, a destructive action is refused |
-| **Full permission** | Every call is gated, because now anything can touch the system. In-project work still passes without a prompt; the rest is judged by effect |
-| **Read-only** | Same as workspace-write: only an escalation request involves the guard |
+| Ordinary work inside the workspace (any mode) | ❌ not at all |
+| An allowed call in full access | ❌ no |
+| **Full access, call asks for extra permission** | ✅ yes (Preview) |
+| Workspace mode, call **escalates to full access** | ✅ yes (Preview) |
 
-It never changes the session's sandbox itself — the mode you pick stays the mode
-you get. What it changes is *what has to be asked when a call wants more*.
+Widen it with `discloseOn: asks` (any call that needs your confirmation) or `discloseOn: all` (every action the rule set knows, which also enables the Report). The post-execution Report has its own switch, `reportExecuted`, and is **off by default** — commenting on every action is itself noise.
 
-The test is "can this damage the computer or stop another program working?", not
-"is this inside the project":
+---
 
-- **granted silently** — reads anywhere, `curl`/`wget`/`ssh`/`git push`/uploads,
-  temp files, package caches (`~/.npm`, `~/Library/Caches`, …), project writes,
-  read-only system probes (`ps`, `sw_vers`, `lsof`);
-- **confirmation** — system state changes (`sudo`, `launchctl`, `defaults`,
-  `networksetup`, `pmset`, `diskutil`, `kill`, global installs), writes outside
-  the project, resource exhaustion, port binding;
-- **refused** — the actions that destroy the machine or cut the session.
+## 6. The other layer: the permission gate
 
-### How a call is decided
+Beyond consequence disclosure the plugin keeps its original permission decision (the paper agrees authorization and containment remain necessary, §8.1):
 
-Once the guard is involved, on the `tools/pre-execute` waterfall:
+- **Allow**: reads anywhere, read-only system queries, network and uploads, in-project writes and builds, temp directories and package caches, session tools.
+- **Ask**: writes outside the project, system state changes (services, preferences, network, power, disks, processes, global installs), resource exhaustion and port grabs, uninspectable commands and unknown tools (**fail closed**).
+- **Deny**: actions that destroy the machine or the session itself — formatting a disk, `rm -rf /`, power off, bringing an interface down, killing core system processes, killing the Harness. The reason is direct: the confirmation prompt depends on that session.
 
-1. **Machine-safe → allow.** Project work, reads anywhere, network traffic and
-   uploads, temp files and package caches. If the call asked for an escalation to
-   do it, the guard grants that escalation silently.
-2. **Could affect the machine or another program → ask.** System state changes
-   and writes outside the project. The user decides, and the prompt carries the
-   consequence analysis.
-3. **Would destroy the machine or cut the session → deny.** Formatting a disk,
-   deleting from `/`, deleting the home directory, powering the machine off,
-   **turning Wi-Fi off**, bringing an interface down, killing
-   `WindowServer`/`launchd`/`Finder`, `kill -9 1`, a fork bomb, or killing the
-   running Harness. A confirmation for these can never be delivered, because the
-   action destroys the session that would show it. Set
-   `protectSessionAndSystem: false` to downgrade them to confirmations.
+**At most one confirmation at a time.** The Harness Web client publishes a single pending approval per session and silently replaces an earlier one, so two concurrent prompts make the first unanswerable. The plugin puts a single-slot queue in front of `approval/request`, with system-related requests taking the slot first.
 
-Anything it cannot read still **fails closed**: uninspectable commands
-(`$(…)`, backticks, `eval`, `node -e`, `python -c`, unbalanced quotes), unknown
-tools, and `$VAR` used as a path all ask first.
+---
 
-## Why "one at a time" is not cosmetic
+## 7. Install
 
-Harness projects **one** pending approval per session. A newer request
-*replaces* the older one in the composer instead of queueing behind it
-(`dsh-client-ui-session` keeps every pending interaction but publishes a single
-visible slot per session, and `dsh-client-ui-approval` registers the approval
-precedence). Two concurrent approvals therefore make the first one impossible to
-answer. This plugin queues `approval/request` in front of the interactive
-answerer, so at most one prompt is ever live.
-
-### Every prompt states what going ahead would cause
-
-A prompt that only asks "allow?" makes you guess. Each confirmation carries a
-deterministic, table-driven assessment — never model-generated — with an impact
-level and the concrete consequence:
-
-- **high** — `ifconfig en0 down`: the machine loses its network, including the
-  model service carrying this conversation; the session is cut off and only you
-  can bring it back.
-- **medium** — `brew install jq`: installs packages globally, may upgrade shared
-  dependencies and break other projects or command-line tools.
-- **low** — `sw_vers`: only reads the system version; nothing is changed.
-- **unknown** — `node -e "…"`: inline code the plugin cannot read, so the real
-  effects are unknown and may reach beyond what the command appears to do.
-
-The level comes from the verdict category and, for system commands, is refined
-per program (`sudo`, `launchctl`, `defaults`, `kill`, `diskutil`, `pip`,
-`osascript`, …). Refusals state the consequence too, so the model learns why.
-
-### Decision table (defaults, when the guard is involved)
-
-**Allow silently**
-
-- Every read: `read` / `read_image` / `glob` / `grep` anywhere, `cat`, `ls`, and
-  read-only system probes (`ps`, `sw_vers`, `lsof`, `uname`, `system_profiler`)
-- Network and uploads: `curl`, `wget`, `ssh`, `scp`, `rsync`, `git push|pull|fetch|clone`,
-  `gh`, `aws`, `gcloud`, `docker`, `kubectl`, `npx`, `npm publish`, `npm cache`
-- Project writes: `write` / `edit` inside the project or a configured root,
-  `mkdir`, `cp`, `mv`, `rm` inside the project, builds and tests
-  (`pnpm`, `npm run`, `node`, `pytest`, `cargo build`, `go test`, `make`, `tsc`)
-- Scratch and caches: `/tmp`, `~/.npm`, `~/Library/Caches`, `~/.cargo`, …
-- Session tools: `todo_write`, `ask_user_question`, `present`, `skill`, `job_*`,
-  `web_search`, `web_fetch`, `cordis_inspect_*`
-
-**Ask**
-
-- Writes outside the project: any `write` / `edit` path elsewhere, `echo x > /usr/…`,
-  `rm -rf ../../other-project`, `cp a.txt ~/Desktop/`, `tee /etc/motd`,
-  `chmod -R 777 /`, `find / -delete`
-- System state: `sudo`, `launchctl`, `defaults`, `systemsetup`, `scutil`,
-  `networksetup`, `ifconfig`, `ip`, `pfctl`, `pmset`, `diskutil`,
-  `softwareupdate`, `sysctl`, `mdutil`, `kill`, `killall`, `pkill`, `brew`,
-  `pip`, `conda`, `osascript`, `open`, `xargs`, `crontab`
-- Shared environment: `npm install -g`, `git config --global`
-- Resource abuse: `dd if=/dev/zero`, `yes >`, `cat /dev/zero`, `mkfile`,
-  `fallocate`, `truncate`, `stress`, `while true`, `python -m http.server`
-- Uninspectable: `node -e`, `python -c`, `$(…)`, `` `…` ``, `eval`, `$VAR` paths,
-  unbalanced quotes, and any unknown tool
-
-**Deny**
-
-- `rm -rf /`, `rm -rf ~`, `rm -rf $HOME`
-- `mkfs`, `newfs`, `fdisk`, `gpt`, `dd … of=/dev/…`, `diskutil eraseDisk`
-- `shutdown`, `reboot`, `halt`
-- `networksetup -setairportpower … off`, `ifconfig … down`, `ip link set … down`,
-  `pfctl -d`, `wg-quick down`
-- `killall WindowServer|loginwindow|launchd|Finder|Dock|mDNSResponder|configd`,
-  `kill -9 1`, `pkill -f "DeepSeek Harness"`, fork bombs
-
-## The consequence disclosure layer, mechanically
-
-- **The rule set is declarative**, entirely in
-  [`rules/consequences.yml`](rules/consequences.yml) — **34 rules** across files,
-  processes, network, services, credentials and accounts, money, reputation and
-  relationships, legal and compliance, intellectual property, and value
-  judgments. Schema and "how to add a rule": [rules/README.md](rules/README.md).
-- **The trigger is deliberately narrow**: by default (`discloseOn:
-  full-access-asks`) the analysis runs only in **full access**, and only for a
-  call that is **asking you for extra permission**. Ordinary work inside the
-  workspace is never analysed. Widen it with `discloseOn: asks` (any call that
-  needs your confirmation) or `all` (every action the rule set knows).
-- **Preview (before the decision)**: the action, the collected state, the
-  consequence in user-level words, the affected interest and its weight, severity
-  and recoverability, confidence and the **checked scope**, and the losses of each
-  option — including the cost of rejecting and backup-then-execute.
-- **Report (after execution, off by default)**: with `reportExecuted` enabled, an
-  action that ran unprompted appends a post-execution disclosure to its result
-  with **predicted vs observed** (match / false alarm / unpredicted change) and a
-  recovery hint. It is off by default because commenting on every action is
-  itself noise.
-- **Relevance selection**: every consequence is scored `r(e) = w · l · κ · ν`
-  (loss net of recoverability); only the top-k above the threshold are shown, and
-  anything below it is silent. Value judgments (tier 3) are flagged and never
-  scored.
-- **Calibration records**: each report appends one JSONL line to
-  `.dsh-project-guard/reports.jsonl` with action types, paths, predictions,
-  observations, coverage and the interest weights in force — never file contents.
-  This is exactly the evidence a predicted-vs-observed calibration needs.
-
-Configuration: `disclose` (master switch), `discloseOn`
-(`full-access-asks` / `asks` / `all`), `attentionBudget` (budget k, default 2),
-`relevanceThreshold` (τ, default 0.3), `reportMinSeverity` (default high),
-`reportExecuted`, `reportDir`, `interests` (declare or add your own dimensions
-and weights) and `rulesFile`.
-
-## Install
-
-## Install
-
-The package is a standard Harness bundle: its `package.json` declares
-`dsh.bundle.patch`, it has no dependencies and it needs no build step.
-
-### From npm (anyone)
-
-Published as [`dsh-project-guard`](https://www.npmjs.com/package/dsh-project-guard):
-
-```sh
-dsh plugin --profile <profile> add dsh-project-guard
-# remove again:
-dsh plugin --profile <profile> remove dsh-project-guard
+```bash
+dsh plugin add dsh-project-guard
+# or from source
+dsh plugin add github:Inceptzws/dsh-project-guard
 ```
 
-### From GitHub
+On the desktop app use Settings → Plugins (that profile is managed exclusively by the app). Remove with `dsh plugin remove dsh-project-guard`.
 
-```sh
-dsh plugin --profile <profile> add github:Inceptzws/dsh-project-guard
-```
+---
 
-The command installs the package and selects its bundle. Confirm the result:
+## 8. Configure
 
-```sh
-dsh --profile <profile> --dump-config | grep -A14 project-guard
-```
+Both layers share one config block (every default is documented in `cordis.patch.yml`):
 
-`dsh` needs Node 24 or newer (`import.meta.main`); the runtime bundled with the
-Desktop app works:
-
-```sh
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node" \
-  /opt/homebrew/bin/dsh plugin --profile web add dsh-project-guard
-```
-
-### Desktop app (recommended there)
-
-The `desktop` profile is owned exclusively by the Electron app, so its plugins
-are installed from the app itself:
-
-1. Open **Settings → Plugins** (设置 → 插件).
-2. Choose **Install bundle** and give `dsh-project-guard`,
-   `github:Inceptzws/dsh-project-guard`, or the absolute path of a local checkout.
-3. The Plugins page reports the installation result and any warning; the new
-   `project-guard` row appears there and is active immediately.
-
-### Other profiles (web, tui, your own)
-
-```sh
-dsh plugin --profile web add /absolute/path/to/dsh-project-guard
-# remove again:
-dsh plugin --profile web remove dsh-project-guard
-```
-
-`dsh` needs Node 24 or newer (`import.meta.main`); the runtime bundled with the
-app works:
-
-```sh
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node" \
-  /opt/homebrew/bin/dsh plugin --profile web add /absolute/path/to/dsh-project-guard
-```
-
-### Manual install (advanced)
-
-The Plugins page is the supported route. The two steps it performs are:
-
-1. `pnpm add link:<absolute bundle directory>` inside `$DSH_HOME/profiles/<profile>`
-2. append the bundle name to that profile's `dsh.profile.bundles` (the dependency
-   alone is not enough — a bundle is only composed when it is listed)
-
-Then confirm the composition with `dsh --profile <profile> --dump-config`. The
-`desktop` profile rejects every CLI invocation from outside the Electron app, so
-use the Plugins page there.
-
-### Confirm the composition
-
-```sh
-dsh --profile web --dump-config | grep -A14 project-guard
-```
-
-You should see a `# == dsh-project-guard` layer and a `project-guard` row with
-your config.
-
-## Configure
-
-Edit the `config` block in this package's `cordis.patch.yml` before installing,
-or override the row from your profile's own patch layer (a matching `id`
-replaces the complete config):
-
-```yaml
-- id: project-guard
-  name: dsh-project-guard
-  config:
-    projectRoots:
-      - ~/Documents/deepseek-harness            # `~` is expanded; siblings in this tree
-    readOnlyRoots:
-      - /Applications/DeepSeek Harness.app      # read app.asar without a prompt
-    allowInlineCode: true                       # permit `node -e` / `python -c` inside the project
-```
-
-| Field | Default | Meaning |
+| Key | Default | Effect |
 |---|---|---|
-| `enabled` | `true` | Master switch |
-| `projectRoots` | `[]` | Extra project roots, merged with the session workspace |
-| `includeSessionCwd` | `true` | Treat the session workspace (`session.header.cwd`) as a project root |
-| `readOnlyRoots` | `[]` | Extra roots that may be read but never written |
-| `includeTempDirs` | `true` | Treat `/tmp` and `os.tmpdir()` as scratch space |
-| `resolveSymlinks` | `true` | Resolve symlinks before deciding containment |
-| `enforceAskPolicy` | `true` | Switch the session back to the `ask` policy; under `never` every request is rejected before any answerer runs, so no prompt could appear |
-| `cacheRoots` | `[]` (built-in) | Roots outside the project whose writes are allowed: package caches, alongside the platform temp area |
-| `serializeApprovals` | `true` | At most one outstanding confirmation |
-| `prioritizeSystemRequests` | `true` | System-related confirmations take the single slot first |
-| `protectSessionAndSystem` | `true` | Deny machine- or session-destroying actions |
-| `allowTools` / `askTools` / `denyTools` | `[]` | Add tools to the allow / ask / deny lists |
-| `systemCommands` | `[]` | Extra system program names |
-| `extraAskPatterns` / `extraAllowPatterns` | `[]` | Extra regular expressions (allow wins over ask) |
-| `allowInlineCode` | `false` | Allow `node -e`, `python -c`, `$(…)`, `eval` |
-| `verbose` | `false` | Log every decision at debug level |
+| `enabled` | `true` | master switch |
+| `projectRoots` / `includeSessionCwd` | `[]` / `true` | project roots; the session workspace counts as one |
+| `enforceAskPolicy` | `true` | keeps confirmations deliverable (under `never` no prompt can appear) |
+| `serializeApprovals` / `prioritizeSystemRequests` | `true` / `true` | single-slot queue, system requests first |
+| `protectSessionAndSystem` | `true` | deny destructive actions (can be downgraded to asking) |
+| `disclose` | `true` | master switch for the disclosure layer |
+| `discloseOn` | `full-access-asks` | when it may speak: `full-access-asks` / `asks` / `all` |
+| `attentionBudget` ($k$) | `2` | most consequences shown for one decision |
+| `relevanceThreshold` ($\tau$) | `0.3` | below this score nothing is disclosed |
+| `reportMinSeverity` | `high` | lowest severity that earns a Report |
+| `reportExecuted` | `false` | append Reports to actions that ran unprompted |
+| `reportDir` | `.dsh-project-guard` | where calibration records are written |
+| `interests` | `{}` | declare or add interest dimensions and weights |
+| `rulesFile` | `""` | use your own rule set |
 
-## Verify
+---
 
-```sh
-node --test test/*.test.mjs      # 94 unit and integration tests
-node test/cordis-mount.mjs       # mounts the plugin on the real cordis runtime
+## 9. Verify
+
+```bash
+node --test test/*.test.mjs   # 93 unit and integration tests
+node test/cordis-mount.mjs    # mount check on the real cordis runtime
 ```
 
-The unit suite pins the three promises (allow / ask / deny), symlink and `..`
-escapes, heredoc and redirection parsing, inline code and `eval`, resource
-exhaustion, escalation reuse, the impact levels and texts, the one-time
-sandbox raise, and the single-slot
-queue (no overlap, system priority, abort, unload). The mount script proves
-`ctx.effect(function* …)` teardown, `{ prepend: true }` ordering and the
-`ctx.waterfall` contract against the installed runtime.
+Releasing additionally verifies that the `npm pack` tarball **contains** `rules/consequences.yml` — the rule set is read from disk at runtime, so a tarball without it installs a plugin with no rules. The release workflow treats all three as gates.
 
-## Limitations
+---
 
-- Containment is judged from the tool name, its arguments and the command text.
-  `allowInlineCode: true` and variables used as paths weaken that guarantee by
-  design.
-- The impact analysis is a rule table, not a simulation: it names the
-  consequences the plugin has a rule for, and a consequence with no rule stays
-  unmentioned even though it may still happen. The level is a hint for ranking
-  your attention, not a guarantee of severity.
-- It governs the Host tool calls it can see. Subagents run their own sessions;
-  their approvals still pass through the same queue, so "one at a time" holds
-  across them.
-- Direct Node side effects inside a `run_code` program bypass inner-tool review,
-  which is why `run_code` asks by default.
-- Other policy plugins still apply. The guard runs first and only *delegates*
-  on allow, so a `tools/pre-execute` listener from another plugin — the LLM Auto
-  review mode, or a Codex/Claude hook — can still deny or ask about an in-project
-  call. Keep the session on a preset without the Auto reviewer when you want
-  in-project work to stay prompt-free.
-- The guard judges intent from the tool name, its arguments and the command
-  text. It never rewrites the session's sandbox, so the mode you pick stays the
-  mode you get — and inside the workspace the sandbox, not this plugin, is what
-  confines a command.
-- Because reads and network traffic are never gated, an uninspected command can
-  still move data outward. This guard protects the machine and other programs,
-  not the confidentiality of what the agent reads.
-- The approval policy must be `ask` for confirmations to be possible;
-  `enforceAskPolicy` keeps it there while the guard is active.
+## 10. Limitations
 
-## Files
+- Judgement is rule matching over **command text plus collected state**, not a sandbox; obfuscated shell can slip past the rules.
+- Reads and network traffic are allowed by requirement, so it does **not** keep data from leaving the machine; it protects "the machine and other programs keep working" and what you are committed to in your name.
+- Tier 2/3 dimensions need outside knowledge and can only be hinted or flagged — deliberate honesty, not an omission.
+- Collectors only see locally observable state; balances, positions and quotas are reported as *not checked*.
+- The plugin hooks core pipelines (`tools/pre-execute`, `tools/post-execute`, `approval/request`); Harness breaking changes need follow-up.
+- Other policy plugins still apply: when this plugin allows a call it only **delegates** to the listeners behind it.
 
-| File | Role |
-|---|---|
-| `index.js` | Plugin entry: the gate, the approval answerer, the lifecycle |
-| `lib/classify.js` | Policy engine and the rule tables |
-| `lib/shell-parse.js` | Conservative shell reader (segments, redirects, heredocs, indirection) |
-| `lib/path-utils.js` | `~` expansion and symlink-aware containment |
-| `lib/approval-queue.js` | The single-slot FIFO with system priority |
-| `cordis.patch.yml` | The profile row and its shipped defaults |
-| `test/` | Unit, integration and real-runtime mount tests |
+---
+
+## 11. Files
+
+```
+index.js                 # permission gate + disclosure trigger + Report wiring
+lib/action.js            # family 1: action normalization
+lib/state.js             # family 2: state collectors (declared scope K)
+lib/interest.js          # family 3: interest dimensions and tiers
+lib/rules.js             # family 4: rule engine
+lib/select.js            # family 5: relevance selection
+lib/disclosure.js        # family 6: Preview / Report rendering
+lib/report.js            # predicted vs observed + JSONL calibration records
+lib/engine.js            # the analyze / preview / report interfaces
+lib/classify.js          # the permission gate
+lib/impact.js            # deterministic impact analysis for the gate
+lib/shell-parse.js       # conservative shell parsing
+lib/path-utils.js        # containment checks
+lib/approval-queue.js    # single-slot FIFO
+lib/yaml.js              # zero-dependency YAML subset parser
+rules/consequences.yml   # 34 declarative rules
+rules/README.md          # schema, predicates, tiers, how to add a rule
+test/                    # 93 cases + the cordis mount check
+```
+
+---
+
+## 12. Citation
+
+```bibtex
+@misc{zhu2026consequencedisclosure,
+  title  = {Decision-Relevant Consequence Disclosure in Complex Computing Systems:
+            Towards Informed Agent Execution},
+  author = {Zhu, Wushuang},
+  year   = {2026},
+  month  = oct,
+  note   = {Preprint v0.1},
+  doi    = {10.5281/zenodo.23187648},
+  url    = {https://doi.org/10.5281/zenodo.23187648}
+}
+```
+
+This repository is the prototype adapter described in §6.2 of that paper; `rules/` is the "rule set" its availability statement refers to.
 
 ## License
 
