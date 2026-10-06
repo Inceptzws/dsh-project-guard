@@ -40,13 +40,20 @@ jobs:
       - name: Use the latest npm
         run: npm install --global npm@latest
 
+      # On a tag push the tag must name the version; a manual run (used to
+      # retry after the trusted publisher was bound late) publishes whatever
+      # package.json says.
       - name: The tag must match package.json
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "tag v$tag does not match package.json version $pkg" >&2
-            exit 1
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$pkg" ]; then
+              echo "tag v$tag does not match package.json version $pkg" >&2
+              exit 1
+            fi
+          else
+            echo "manual run: publishing package.json version $pkg"
           fi
 
       - name: Run the test suite
