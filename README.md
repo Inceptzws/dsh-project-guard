@@ -2,6 +2,7 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23187648.svg)](https://doi.org/10.5281/zenodo.23187648)
 
 **📄 Preprint: [Decision-Relevant Consequence Disclosure in Complex Computing Systems: Towards Informed Agent Execution](https://doi.org/10.5281/zenodo.23187648)**
+
 [中文说明](README.zh.md) | **English**
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that
@@ -145,6 +146,41 @@ per program (`sudo`, `launchctl`, `defaults`, `kill`, `diskutil`, `pip`,
   `pfctl -d`, `wg-quick down`
 - `killall WindowServer|loginwindow|launchd|Finder|Dock|mDNSResponder|configd`,
   `kill -9 1`, `pkill -f "DeepSeek Harness"`, fork bombs
+
+## Consequence disclosure layer
+
+On top of the permission decision there is a **consequence disclosure** layer. It
+answers a different question: not whether an action may run, but **what it costs
+you**.
+
+- **The rule set is declarative**, entirely in
+  [`rules/consequences.yml`](rules/consequences.yml) — 19 rules across the file,
+  process, network, service and economic/delegation families. Schema:
+  [rules/README.md](rules/README.md).
+- **Preview (before the decision)**: the confirmation prompt carries the action,
+  the collected state, the consequence in user-level words, the affected interest
+  and its weight, severity and recoverability, confidence and the **checked
+  scope**, and the losses of each option (including the cost of rejecting, and
+  backup-then-execute).
+- **Report (after execution)**: when an action that a rule speaks about runs
+  without a confirmation, a report is appended to the tool result with
+  **predicted vs observed** (match, false alarm, unpredicted change) and a
+  recovery hint — so a silent loss stops being silent.
+- **State is collected, never guessed**: the same `rm` is "irreversible data
+  loss" when the target has uncommitted changes and a different rule when it is
+  clean and unbacked up. A predicate that cannot be decided never fires a rule;
+  it lands in the "not checked / undecidable" line instead of being rendered as
+  good news.
+- **Relevance selection**: every consequence is scored `r(e) = w · l · κ · ν`
+  (loss net of recoverability); only the top-k above the threshold are shown, and
+  anything below it is not shown at all — approval fatigue is itself a risk.
+- **Calibration records**: every report appends one JSONL line to
+  `.dsh-project-guard/reports.jsonl` with action types, paths, predictions,
+  observations and coverage — never file contents.
+
+Configuration: `disclose` (off leaves the permission gate alone),
+`attentionBudget` (budget k), `relevanceThreshold` (τ), `reportDir`, `interests`
+(declare your own weights, e.g. `privacy: 1.0`) and `rulesFile`.
 
 ## Install
 

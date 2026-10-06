@@ -1,0 +1,440 @@
+# dsh-project-guard 后果规则集 (consequence rule set)
+#
+# 论文 *Decision-Relevant Consequence Disclosure in Complex Computing Systems*
+# 第 4 节 "Consequence Rule System" 的机器可读形式。六个规则族在同一条规则里
+# 依次出现：action -> state_predicates -> interest -> consequence ->
+# (selection 由 lib/select.js 按 r(e)=w·l·κ·ν 计算) -> disclosure。
+#
+# 字段
+#   id                 规则标识，用于审计与报告回填
+#   action.type        归一化动作类型（见 lib/action.js）
+#   action.target_kind 目标类别：file | dir | path | process | service | network | package | resource | command | agent | quota | session
+#   state_predicates   状态谓词字符串；全部为真才触发（未知 -> 规则跳过，并记入覆盖率说明）
+#   interest.dimension 受影响利益维度（见 lib/interest.js）
+#   interest.item      用户可读的利益条目，支持 ${target}
+#   consequence        type / severity(high|medium|low) / recoverability(low|medium|high) / confidence(0-1)
+#   non_obviousness    ν：仅凭动作描述有多不显然（0-1），参与相关性排序
+#   options            其它选项及其损失，用于"选项"一栏
+#   disclosure.life    生活层面的一句话（论文 H3 的被试条件）
+#   disclosure.technical 技术层面证据（可展开）
+#   *_zh               中文渲染（渲染扩展，不改变论文 schema）
+#
+# 数据最小化：只有 action.type 命中某条规则时，才会去跑它需要的收集器（第 6.4 节）。
+
+version: 1
+updated: "2026-10-06"
+
+rules:
+  # ─────────────── 文件：删除 / 覆盖 ───────────────
+  - id: R-FILE-DEL-01
+    action: {type: fs.delete, target_kind: path}
+    state_predicates:
+      - "vcs.uncommitted(target) == true"
+    interest: {dimension: data_work, item: "uncommitted work in ${target}"}
+    consequence:
+      type: irreversible_data_loss
+      severity: high
+      recoverability: low
+      confidence: 0.9
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "the uncommitted work in ${target}"}
+      - {id: reject, loss: "this step of the task does not happen"}
+      - {id: backup_then_execute, loss: "a few seconds; the work becomes recoverable"}
+    disclosure:
+      life: "This file holds changes you have not saved anywhere else. If it is deleted, that work may be gone for good."
+      life_zh: "这个文件里有你还没在别处保存过的改动。一旦被删，这些工作很可能就找不回来了。"
+      technical: "target has uncommitted modifications; no recoverable copy is known"
+      technical_zh: "目标存在未提交改动；未发现已知的可恢复副本"
+
+  - id: R-FILE-DEL-02
+    action: {type: fs.delete, target_kind: path}
+    state_predicates:
+      - "vcs.uncommitted(target) == false"
+      - "backup.exists(target, max_age: 7d) == false"
+      - "path.is_build_artifact(target) == false"
+    interest: {dimension: data_work, item: "data in ${target}"}
+    consequence:
+      type: unbacked_deletion
+      severity: high
+      recoverability: low
+      confidence: 0.7
+    non_obviousness: 0.7
+    options:
+      - {id: execute, loss: "the data in ${target}"}
+      - {id: reject, loss: "this step of the task does not happen"}
+      - {id: backup_then_execute, loss: "a few seconds of copying"}
+    disclosure:
+      life: "No recent backup of this path was found. Deleting it may take the only copy with it."
+      life_zh: "没有找到这个路径的近期备份。删除它可能连带把唯一一份也带走。"
+      technical: "no backup file or version-control copy newer than 7d near target"
+      technical_zh: "目标附近未发现 7 天内的备份文件或版本控制副本"
+
+  - id: R-FILE-DEL-03
+    action: {type: fs.delete, target_kind: path}
+    state_predicates:
+      - "path.system_root(target) == true"
+    interest: {dimension: data_work, item: "every file reachable from ${target}"}
+    consequence:
+      type: catastrophic_data_loss
+      severity: high
+      recoverability: low
+      confidence: 0.95
+    non_obviousness: 0.4
+    options:
+      - {id: reject, loss: "nothing; the files stay where they are"}
+      - {id: bounded, loss: "nothing; delete a named subdirectory instead"}
+    disclosure:
+      life: "This deletes from the root of the filesystem or from your home directory. It can take your documents, your settings and the system itself, and a running machine will not survive it."
+      life_zh: "这是从文件系统根目录或你的主目录往下删。它可能带走你的文档、你的配置乃至系统本身，机器也活不下来。"
+      technical: "${target} resolves to a filesystem root or the home directory"
+      technical_zh: "${target} 解析到文件系统根目录或主目录"
+
+  - id: R-FILE-OVERWRITE-01
+    action: {type: fs.overwrite, target_kind: path}
+    state_predicates:
+      - "vcs.uncommitted(target) == true"
+      - "path.is_build_artifact(target) == false"
+    interest: {dimension: data_work, item: "uncommitted work in ${target}"}
+    consequence:
+      type: partial_data_loss
+      severity: medium
+      recoverability: medium
+      confidence: 0.85
+    non_obviousness: 0.85
+    options:
+      - {id: execute, loss: "the current contents of ${target}"}
+      - {id: reject, loss: "the edit does not happen"}
+      - {id: backup_then_execute, loss: "a few seconds; the previous contents stay recoverable"}
+    disclosure:
+      life: "This file has unsaved changes. Overwriting it discards them unless you have a copy."
+      life_zh: "这个文件有还没提交的改动。覆盖它会把那些改动丢掉，除非你另存过。"
+      technical: "target is dirty in version control before the write"
+      technical_zh: "写入前目标在版本控制中处于已修改状态"
+
+  - id: R-FILE-OUTSIDE-01
+    action: {type: fs.overwrite, target_kind: path}
+    state_predicates:
+      - "scope.outside_project == true"
+    interest: {dimension: data_work, item: "files outside this project"}
+    consequence:
+      type: cross_project_write
+      severity: medium
+      recoverability: medium
+      confidence: 0.8
+    non_obviousness: 0.6
+    options:
+      - {id: execute, loss: "files outside this project"}
+      - {id: reject, loss: "this step of the task does not happen"}
+    disclosure:
+      life: "This writes outside your project, so it can change another project's files or your own configuration."
+      life_zh: "这次写入落在项目之外，可能改到别的项目的文件或你自己的配置。"
+      technical: "target resolves outside every configured project root"
+      technical_zh: "目标解析到所有已配置项目根目录之外"
+
+  # ─────────────── 进程：终止 ───────────────
+  - id: R-PROC-KILL-01
+    action: {type: process.kill, target_kind: process}
+    state_predicates:
+      - "process.running(target) == true"
+    interest: {dimension: data_work, item: "unsaved work in ${target}"}
+    consequence:
+      type: process_termination
+      severity: medium
+      recoverability: low
+      confidence: 0.8
+    non_obviousness: 0.8
+    options:
+      - {id: execute, loss: "whatever ${target} has not saved; it stops immediately"}
+      - {id: reject, loss: "the process keeps running"}
+    disclosure:
+      life: "That program stops right now. Anything it has not saved is lost, and it may be a program you are using."
+      life_zh: "那个程序会立刻停止。没保存的内容会丢失，而且它可能正是你正在用的程序。"
+      technical: "process matching target is running under the same user"
+      technical_zh: "同一用户下有匹配目标的进程在运行"
+
+  - id: R-PROC-KILL-02
+    action: {type: process.kill, target_kind: process}
+    state_predicates:
+      - "process.core_system == true"
+    interest: {dimension: availability, item: "the desktop and other running programs"}
+    consequence:
+      type: system_instability
+      severity: high
+      recoverability: low
+      confidence: 0.95
+    non_obviousness: 0.5
+    options:
+      - {id: reject, loss: "the task cannot use this route"}
+    disclosure:
+      life: "This kills a core system process; the screen can blank, you can be logged out, and a forced restart may be the only way back."
+      life_zh: "这会杀掉系统核心进程，可能立刻黑屏、注销，只能强制重启才能恢复。"
+      technical: "target matches the core-process list (WindowServer, launchd, Finder, Dock, ...)"
+      technical_zh: "目标命中核心进程名单（WindowServer、launchd、Finder、Dock 等）"
+
+  # ─────────────── 网络：配置 与 外发 ───────────────
+  - id: R-NET-CONFIG-01
+    action: {type: network.change, target_kind: network}
+    state_predicates:
+      - "always()"
+    interest: {dimension: availability, item: "this machine's network connection"}
+    consequence:
+      type: connectivity_loss
+      severity: high
+      recoverability: medium
+      confidence: 0.95
+    non_obviousness: 0.4
+    options:
+      - {id: execute, loss: "the connection to everything outside this machine"}
+      - {id: reject, loss: "the configuration stays as it is"}
+    disclosure:
+      life: "This changes your network configuration. You can lose the connection to everything outside this machine, including the model service carrying this conversation, and only you can bring it back."
+      life_zh: "这会改动网络配置。你可能与这台机器之外的一切失去连接，包括承载这次对话的模型服务，而且只有你能把它恢复回来。"
+      technical: "action rewrites interface, route, DNS or firewall state"
+      technical_zh: "该动作会改写网卡、路由、DNS 或防火墙状态"
+
+  - id: R-NET-EGRESS-01
+    action: {type: network.egress, target_kind: network}
+    state_predicates:
+      - "always()"
+    interest: {dimension: privacy, item: "data leaving this machine"}
+    consequence:
+      type: external_disclosure
+      severity: medium
+      recoverability: low
+      confidence: 0.5
+    non_obviousness: 0.7
+    options:
+      - {id: execute, loss: "whatever is sent leaves your control"}
+      - {id: reject, loss: "the transfer does not happen"}
+    disclosure:
+      life: "Data leaves this machine. Once it is sent you cannot take it back, and you cannot see what the other side keeps."
+      life_zh: "数据会离开这台机器。发出去就收不回来，而且你看不到对方留了什么。"
+      technical: "egress command detected (upload, remote git, publish, remote shell)"
+      technical_zh: "检测到外发命令（上传、远端 git、发布、远程 shell）"
+
+  # ─────────────── 服务：改动 ───────────────
+  - id: R-SVC-CHANGE-01
+    action: {type: service.change, target_kind: service}
+    state_predicates:
+      - "service.dependents(target) > 0"
+    interest: {dimension: availability, item: "programs depending on ${target}"}
+    consequence:
+      type: service_disruption
+      severity: medium
+      recoverability: medium
+      confidence: 0.8
+    non_obviousness: 0.85
+    options:
+      - {id: execute, loss: "every program that depends on ${target} stops working now"}
+      - {id: reject, loss: "the service keeps its current state"}
+    disclosure:
+      life: "Other programs are using this service. Stopping or disabling it breaks them immediately, and some need a restart to recover."
+      life_zh: "还有其他程序在用这个服务。停掉或禁用它会让那些程序立刻失效，有些要重启才能恢复。"
+      technical: "dependent processes were found for the service target"
+      technical_zh: "为该服务目标找到了依赖它的进程"
+
+  # ─────────────── 包：全局环境 ───────────────
+  - id: R-PKG-GLOBAL-01
+    action: {type: package.install, target_kind: package}
+    state_predicates:
+      - "always()"
+    interest: {dimension: environment, item: "shared tools and other projects"}
+    consequence:
+      type: environment_drift
+      severity: medium
+      recoverability: medium
+      confidence: 0.8
+    non_obviousness: 0.8
+    options:
+      - {id: execute, loss: "the current versions of shared dependencies"}
+      - {id: reject, loss: "the package is not installed"}
+      - {id: project_local, loss: "nothing shared; install into the project instead"}
+    disclosure:
+      life: "This installs or upgrades software outside your project. Shared dependencies can move with it, and other projects or command-line tools can stop working."
+      life_zh: "这会在项目之外安装或升级软件。共享依赖可能被一起带着升级，其他项目或命令行工具会因此失效。"
+      technical: "global install or upgrade detected for a system package manager"
+      technical_zh: "系统级包管理器的全局安装或升级"
+
+  # ─────────────── 资源：耗尽 与 抢占 ───────────────
+  - id: R-RES-DISK-01
+    action: {type: resource.exhaust, target_kind: resource}
+    state_predicates:
+      - "always()"
+    interest: {dimension: availability, item: "free disk space for every program"}
+    consequence:
+      type: resource_exhaustion
+      severity: high
+      recoverability: medium
+      confidence: 0.85
+    non_obviousness: 0.8
+    options:
+      - {id: execute, loss: "free disk space, and with it every program's ability to write"}
+      - {id: reject, loss: "the generated data does not exist"}
+      - {id: bounded, loss: "nothing; cap the size instead"}
+    disclosure:
+      life: "This can fill the disk. Once it is full, every program fails to write, including the system log, and the machine becomes unstable."
+      life_zh: "这可能把磁盘写满。一旦写满，所有程序都写不进去（连系统日志也是），机器会变得不稳定。"
+      technical: "unbounded write or large preallocation detected"
+      technical_zh: "检测到无上限写入或大块预分配"
+
+  - id: R-RES-CPU-01
+    action: {type: resource.exhaust, target_kind: resource}
+    state_predicates:
+      - "always()"
+    interest: {dimension: availability, item: "CPU and memory for other programs"}
+    consequence:
+      type: resource_exhaustion
+      severity: medium
+      recoverability: high
+      confidence: 0.7
+    non_obviousness: 0.6
+    options:
+      - {id: execute, loss: "the machine slows down for as long as this runs"}
+      - {id: reject, loss: "the load does not run"}
+    disclosure:
+      life: "This keeps the CPU or memory busy, so the machine and everything else on it get slow or stop responding while it runs."
+      life_zh: "这会让 CPU 或内存长时间被占住，期间整机和其他程序都会变慢甚至没反应。"
+      technical: "load test or unbounded loop detected"
+      technical_zh: "检测到压力测试或没有退出条件的循环"
+
+  - id: R-RES-PORT-01
+    action: {type: resource.exhaust, target_kind: resource}
+    state_predicates:
+      - "always()"
+    interest: {dimension: availability, item: "ports other services already use"}
+    consequence:
+      type: resource_conflict
+      severity: medium
+      recoverability: high
+      confidence: 0.7
+    non_obviousness: 0.7
+    options:
+      - {id: execute, loss: "the port may already be taken; the other service wins or this fails"}
+      - {id: reject, loss: "the local server does not start"}
+    disclosure:
+      life: "This opens a local port. If something else already uses it, one of the two services fails or takes over."
+      life_zh: "这会占用本机端口。如果已有服务在用，两者会有一个失败或被顶掉。"
+      technical: "local server bind detected"
+      technical_zh: "检测到本机服务端口绑定"
+
+  # ─────────────── 磁盘 / 电源 / 会话 ───────────────
+  - id: R-DISK-DESTROY-01
+    action: {type: disk.change, target_kind: path}
+    state_predicates:
+      - "always()"
+    interest: {dimension: data_work, item: "every file on the target volume"}
+    consequence:
+      type: catastrophic_data_loss
+      severity: high
+      recoverability: low
+      confidence: 0.95
+    non_obviousness: 0.3
+    options:
+      - {id: reject, loss: "the disk operation does not happen"}
+    disclosure:
+      life: "This destroys a disk or filesystem. Everything on it is gone and the machine may not start again."
+      life_zh: "这会破坏磁盘或文件系统。上面的数据全部消失，机器可能再也起不来。"
+      technical: "format, partition, erase or raw device write detected"
+      technical_zh: "检测到格式化、分区、擦除或裸设备写入"
+
+  - id: R-POWER-01
+    action: {type: power.change, target_kind: command}
+    state_predicates:
+      - "always()"
+    interest: {dimension: availability, item: "every running program and this session"}
+    consequence:
+      type: session_and_work_loss
+      severity: high
+      recoverability: medium
+      confidence: 0.95
+    non_obviousness: 0.3
+    options:
+      - {id: reject, loss: "the machine keeps running"}
+    disclosure:
+      life: "The machine powers off or restarts. Every program ends at once, unsaved work is lost, and this conversation ends with it."
+      life_zh: "机器会关机或重启。所有程序立即结束、未保存的工作丢失，这次对话也随之结束。"
+      technical: "power state change detected"
+      technical_zh: "检测到电源状态变更"
+
+  - id: R-SESSION-KILL-01
+    action: {type: session.kill, target_kind: session}
+    state_predicates:
+      - "always()"
+    interest: {dimension: availability, item: "this conversation and its approvals"}
+    consequence:
+      type: oversight_channel_loss
+      severity: high
+      recoverability: low
+      confidence: 0.95
+    non_obviousness: 0.6
+    options:
+      - {id: reject, loss: "the Harness keeps running"}
+    disclosure:
+      life: "This stops the Harness itself, which is the thing showing you this. The conversation ends and this confirmation cannot be answered any more."
+      life_zh: "这会停掉 Harness 本身——也就是正在向你显示这条确认的程序。对话会结束，这条确认再也无法回答。"
+      technical: "target matches the running Harness process"
+      technical_zh: "目标匹配正在运行的 Harness 进程"
+
+  # ─────────────── 无法检查：覆盖率感知披露 ───────────────
+  - id: R-EXEC-UNINSPECTABLE-01
+    action: {type: exec.uninspectable, target_kind: command}
+    state_predicates:
+      - "always()"
+    interest: {dimension: data_work, item: "whatever this command touches"}
+    consequence:
+      type: unknown_effect
+      severity: medium
+      recoverability: medium
+      confidence: 0.3
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "unknown; the command hides its effects"}
+      - {id: reject, loss: "the step does not run"}
+      - {id: rewrite, loss: "nothing; write it so the effects are visible"}
+    disclosure:
+      life: "This runs code the analyzer cannot read, so what it actually changes is unknown. It may reach further than the command looks."
+      life_zh: "这段代码分析器读不懂，所以它实际会改什么并不知道，影响可能比看起来大。"
+      technical: "inline interpreter, command substitution, eval or unbalanced quotes detected"
+      technical_zh: "检测到内联解释器、命令替换、eval 或引号不配对"
+
+  # ─────────────── 经济 / 委派链 ───────────────
+  - id: R-DELEG-SPAWN-01
+    action: {type: agent.spawn, target_kind: agent}
+    state_predicates:
+      - "always()"
+    interest: {dimension: authority_delegation, item: "your authority, delegated onward"}
+    consequence:
+      type: delegated_authority
+      severity: medium
+      recoverability: medium
+      confidence: 0.6
+    non_obviousness: 0.9
+    options:
+      - {id: execute, loss: "each further step runs without being shown to you"}
+      - {id: reject, loss: "the work is not delegated"}
+    disclosure:
+      life: "This hands the work to another agent. It can run more steps under your credentials, and you will not see each of them."
+      life_zh: "这会把工作交给另一个智能体。它可以用你的身份继续跑更多步骤，而你不会看到每一步。"
+      technical: "delegation action detected (subagent, workflow or teammate)"
+      technical_zh: "检测到委派动作（子代理、工作流或队友）"
+
+  - id: R-ECON-QUOTA-01
+    action: {type: api.spend, target_kind: quota}
+    state_predicates:
+      - "always()"
+    interest: {dimension: economic, item: "your balance or quota"}
+    consequence:
+      type: quota_consumption
+      severity: medium
+      recoverability: low
+      confidence: 0.4
+    non_obviousness: 0.6
+    options:
+      - {id: execute, loss: "some of your balance or quota"}
+      - {id: reject, loss: "the call does not happen"}
+    disclosure:
+      life: "This spends from your balance or quota with an external service, and a delegated agent can spend more of it afterwards."
+      life_zh: "这会花掉你在外部服务上的余额或配额，而被委派的智能体之后还能继续花。"
+      technical: "spend-bearing api call detected; quota state not collected"
+      technical_zh: "检测到会产生费用的 API 调用；未采集配额状态"

@@ -54,4 +54,30 @@
         systemCommands: []
         extraAskPatterns: []
         extraAllowPatterns: []
+        # ── Consequence disclosure layer ────────────────────────────────────
+        # `Decision-Relevant Consequence Disclosure in Complex Computing
+        # Systems`. On top of the permission decision above, the rule set in
+        # rules/consequences.yml predicts what an action costs the user, shows a
+        # Preview inside the confirmation prompt, and appends a Report to the
+        # tool result when an action ran without one. Set false for the
+        # permission gate alone.
+        disclose: true
+        # Most consequences shown for one decision (the paper's budget k), and
+        # the relevance threshold τ below which nothing is disclosed at all.
+        attentionBudget: 2
+        relevanceThreshold: 0.15
+        # Observed-vs-predicted records, relative to the workspace. These are the
+        # calibration evidence the paper's evaluation consumes; they hold action
+        # types, paths and verdicts, never file contents.
+        reportDir: .dsh-project-guard
+        # Declared interest weights (0-1) for the selection rule
+        # r(e) = w_j · l_j(e) · κ_e · ν_e. Anything omitted keeps its default:
+        #   data_work 1.0 · availability 0.9 · environment 0.8 ·
+        #   authority_delegation 0.7 · economic 0.6 · privacy 0.5
+        # For example, to say "privacy matters as much as my work here":
+        #   interests:
+        #     privacy: 1.0
+        interests: {}
+        # Use a different rule set than the shipped one.
+        rulesFile: ""
         verbose: false

@@ -17,6 +17,13 @@
  *    off Wi-Fi, or killing a core system process — are refused outright,
  *    because a confirmation for them can never be delivered.
  *
+ * On top of that permission layer sits the consequence-disclosure layer of
+ * *Decision-Relevant Consequence Disclosure in Complex Computing Systems*: a
+ * deterministic rule set that predicts what an action would cost the user
+ * (state -> interest -> consequence -> relevance selection), a **Preview** shown
+ * before a confirmation, and a **Report** appended to the tool result when an
+ * action ran by default, so a loss is never silent.
+ *
  * The plugin is dependency-free and imports no Harness package, so a profile
  * install resolves it without a lockfile entry for dsh internals.
  *
@@ -24,6 +31,7 @@
  */
 import { createApprovalQueue } from './lib/approval-queue.js';
 import { createPolicy } from './lib/classify.js';
+import { createDisclosureEngine } from './lib/engine.js';
 import { impactLine } from './lib/impact.js';
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -69,6 +77,24 @@ export function apply(ctx, config) {
   const records = new Map();
   const MAX_RECORDS = 512;
   const queue = createApprovalQueue(policy.config.prioritizeSystemRequests);
+  /** Calls whose predicted consequences still need an after-the-fact report. */
+  const pendingReports = new Map();
+  const MAX_PENDING_REPORTS = 128;
+
+  /** The consequence-disclosure layer, when it is switched on. */
+  const engine = policy.config.disclose ? createDisclosureEngine({ policy, warn, log }) : undefined;
+
+  /** Keep a prediction for the Report phase, for actions that will execute. */
+  const keepForReport = (exec, session, cwd, analysis) => {
+    if (analysis === undefined || analysis.selected.length === 0) return;
+    const key = keyOf(exec.callId);
+    if (key === undefined) return;
+    pendingReports.set(key, { analysis, cwd, session });
+    if (pendingReports.size > MAX_PENDING_REPORTS) {
+      const oldest = pendingReports.keys().next();
+      if (!oldest.done) pendingReports.delete(oldest.value);
+    }
+  };
 
   const keyOf = (callId) => (typeof callId === 'string' && callId.length > 0 ? callId : undefined);
 
@@ -138,6 +164,11 @@ export function apply(ctx, config) {
     if (session === undefined || typeof cwd !== 'string' || cwd.length === 0) return next();
 
     const mode = sandboxModeOf(session);
+
+    // Consequence analysis first: it is skipped in microseconds unless the rule
+    // set speaks about this kind of action.
+    const analysis = engine === undefined ? undefined : engine.analyze({ tool: exec.name, args: exec.arguments, cwd, session });
+
     let decision;
     try {
       decision = policy.classify({ tool: exec.name, args: exec.arguments, cwd, mode });
@@ -157,15 +188,23 @@ export function apply(ctx, config) {
     }
 
     // Work that stays inside the workspace is already confined by the sandbox:
-    // the guard does not take part in it at all.
-    if (decision.engage === false) return next();
+    // the permission layer does not take part in it at all. The disclosure layer
+    // does, because an action that runs by default is exactly the case where a
+    // loss would otherwise be silent.
+    if (decision.engage === false) {
+      keepForReport(exec, session, cwd, analysis);
+      return next();
+    }
 
     remember(exec, session, decision);
 
     if (policy.config.enforceAskPolicy) ensureAskPolicy(agent);
     log(`project-guard: ${decision.kind} ${exec.name} (${decision.code})${decision.detail === undefined ? '' : ` — ${decision.detail}`}`);
 
-    if (decision.kind === 'allow') return next();
+    if (decision.kind === 'allow') {
+      keepForReport(exec, session, cwd, analysis);
+      return next();
+    }
     if (decision.kind === 'deny') {
       return {
         kind: 'deny',
@@ -178,12 +217,49 @@ export function apply(ctx, config) {
       };
     }
     const level = decision.impact?.level;
+    const base = displayOf(decision.reason, decision.zh, decision.impact);
+    const preview = engine?.preview(analysis, 'zh');
+    const previewEn = engine?.preview(analysis, 'en');
     return {
       kind: 'ask',
       // The audited reason carries the impact level; the prompt carries the text.
       reason: level === undefined ? decision.reason : `${decision.reason} [impact: ${level}]`,
-      displayReason: displayOf(decision.reason, decision.zh, decision.impact)
+      displayReason: preview === undefined ? base : {
+        zh: `${base.zh}\n\n${preview}`,
+        en: `${base.en}\n\n${previewEn}`
+      }
     };
+  };
+
+  /**
+   * The `tools/post-execute` waterfall: append the post-execution Report to the
+   * result of an action that ran without a confirmation. A report exists only
+   * when the rule set predicted something for that action, so ordinary work
+   * stays untouched.
+   */
+  const postExecute = async (exec, result, next) => {
+    const decision = await next();
+    if (engine === undefined || pendingReports.size === 0) return decision;
+    const key = keyOf(exec?.callId);
+    const pending = key === undefined ? undefined : pendingReports.get(key);
+    if (pending === undefined) return decision;
+    pendingReports.delete(key);
+
+    const built = engine.report({
+      analysis: pending.analysis,
+      cwd: pending.cwd,
+      session: pending.session,
+      sessionId: pending.session?.header?.id
+    });
+    if (built === undefined) return decision;
+
+    // A downstream block wins; a value-shaped acceptance cannot carry content.
+    if (decision.kind !== 'accept' || decision.value !== undefined) return decision;
+    const content = Array.isArray(decision.content)
+      ? decision.content
+      : (Array.isArray(result?.content) ? [...result.content] : []);
+    log(`project-guard: report appended for ${exec.name} (${pending.analysis.action.type})`);
+    return { kind: 'accept', content: [...content, { type: 'text', text: built.rendered }] };
   };
 
   /**
@@ -232,15 +308,23 @@ export function apply(ctx, config) {
   ctx.effect(function* () {
     yield ctx.on('tools/pre-execute', gate, { prepend: true });
     yield ctx.on('approval/request', answerer, { prepend: true });
+    yield ctx.on('tools/post-execute', postExecute);
     yield ctx.on('tools/result', (exec) => {
       const key = keyOf(exec?.callId);
-      if (key !== undefined) records.delete(key);
+      if (key === undefined) return;
+      records.delete(key);
+      pendingReports.delete(key);
     });
     yield () => {
       queue.drain();
       records.clear();
+      pendingReports.clear();
     };
   }, 'project-guard lifecycle');
 
-  ctx.logger?.info?.('project-guard: active; this project runs with full permission and every call is decided here, everything else asks once at a time');
+  ctx.logger?.info?.(
+    engine === undefined
+      ? 'project-guard: active; in-project work is untouched, every extra permission is decided here, one confirmation at a time'
+      : `project-guard: active; permission gate + consequence disclosure (${engine.ruleSet.rules.length} rules), one confirmation at a time`
+  );
 }
