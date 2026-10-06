@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-guard",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Consequence analysis for DeepSeek Harness: it says what an extra-permission call costs you — the device, your delegated authority, your wider interests. State-based, not guessed.",
   "icon": "./icon.svg",
   "type": "module",
