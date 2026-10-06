@@ -16,7 +16,7 @@ actions that would damage the machine or cut the session are refused outright. A
 most one confirmation is outstanding at a time.
 
 It is a Host plugin: zero dependencies, no imports of any Harness package, no UI
-code, and no build step. `index.js` plus five small modules is the whole plugin.
+code, and no build step. `index.js`, the modules under `lib/`, and the declarative rule set `rules/consequences.yml` are the whole plugin.
 
 ---
 
@@ -354,7 +354,7 @@ replaces the complete config):
 ## Verify
 
 ```sh
-node --test test/*.test.mjs      # 46 unit and integration tests
+node --test test/*.test.mjs      # 94 unit and integration tests
 node test/cordis-mount.mjs       # mounts the plugin on the real cordis runtime
 ```
 

@@ -18,6 +18,7 @@
     "index.js",
     "lib",
     "locale/*.json",
+    "rules",
     "cordis.patch.yml",
     "icon.svg",
     "README.md",

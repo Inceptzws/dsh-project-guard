@@ -10,7 +10,7 @@
 直接拒绝。同一时刻最多只有一条确认。
 
 它是一个 Host 插件：零依赖、不 import 任何 Harness 包、没有 UI 代码、不需要构建。
-`index.js` 加五个小模块就是全部。
+`index.js` 加 `lib/` 里的模块、以及声明式规则集 `rules/consequences.yml` 就是全部。
 
 ---
 
@@ -287,7 +287,7 @@ dsh --profile web --dump-config | grep -A14 project-guard
 ## 验证
 
 ```sh
-node --test test/*.test.mjs      # 46 个单元与集成用例
+node --test test/*.test.mjs      # 94 个单元与集成用例
 node test/cordis-mount.mjs       # 在真实 cordis 运行时上挂载插件
 ```
 
