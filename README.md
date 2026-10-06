@@ -1,5 +1,7 @@
 # dsh-project-guard
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23187648.svg)](https://doi.org/10.5281/zenodo.23187648)
 
+**📄 Preprint: [Decision-Relevant Consequence Disclosure in Complex Computing Systems: Towards Informed Agent Execution](https://doi.org/10.5281/zenodo.23187648)**
 [中文说明](README.zh.md) | **English**
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that
