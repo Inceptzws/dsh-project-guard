@@ -228,8 +228,10 @@ test('only material consequences earn an unsolicited report', () => {
     const policy = { config: normalizeConfig({ projectRoots: [workspace], includeSessionCwd: false }), rootsFor: () => [workspace] };
     const engine = createDisclosureEngine({ policy });
     const session = { header: { cwd: workspace } };
-    // process.kill is medium severity: a preview, but no unsolicited report.
-    const medium = engine.analyze({ tool: 'bash', args: { command: 'killall Safari' }, cwd: workspace, session });
+    // Killing a process is a medium-severity consequence: a preview exists, but
+    // no unsolicited report (reportMinSeverity defaults to high). The target is
+    // `node`, which is by definition running wherever this test runs.
+    const medium = engine.analyze({ tool: 'bash', args: { command: 'killall node' }, cwd: workspace, session });
     assert.ok(medium.selected.length > 0, 'the preview still exists');
     assert.ok(medium.selected.every((entry) => entry.severity !== 'high'));
     assert.equal(engine.report({ analysis: medium, cwd: workspace, session }), undefined);
@@ -412,22 +414,6 @@ test('generated output does not count as unrecoverable loss', () => {
     assert.equal(collectors['path.is_build_artifact']('src/main.js').value, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('only material consequences earn an unsolicited report', () => {
-  const workspace = mkdtempSync(join(tmpdir(), 'pg-quiet-'));
-  try {
-    const policy = { config: normalizeConfig({ projectRoots: [workspace], includeSessionCwd: false }), rootsFor: () => [workspace] };
-    const engine = createDisclosureEngine({ policy });
-    const session = { header: { cwd: workspace } };
-    // process.kill is medium severity: a preview, but no unsolicited report.
-    const medium = engine.analyze({ tool: 'bash', args: { command: 'killall Safari' }, cwd: workspace, session });
-    assert.ok(medium.selected.length > 0, 'the preview still exists');
-    assert.ok(medium.selected.every((entry) => entry.severity !== 'high'));
-    assert.equal(engine.report({ analysis: medium, cwd: workspace, session }), undefined);
-  } finally {
-    rmSync(workspace, { recursive: true, force: true });
   }
 });
 
